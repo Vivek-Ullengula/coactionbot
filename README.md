@@ -27,8 +27,10 @@ agentcore_runtime/
   agentcore_entrypoint.py
 
 ui/
-  app.py
-  Dockerfile
+  app.py              # Streamlit UI (legacy)
+  gradio_app.py       # Gradio UI (current)
+  Dockerfile          # Streamlit Dockerfile
+  Dockerfile.gradio   # Gradio Dockerfile
 
 .bedrock_agentcore.yaml
 docker-compose.yml
@@ -78,7 +80,13 @@ Run API:
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Run UI:
+Run UI (Gradio — recommended):
+
+```bash
+python ui/gradio_app.py
+```
+
+Or legacy Streamlit UI:
 
 ```bash
 cd ui
@@ -97,7 +105,7 @@ docker compose up --build
 
 Access:
 - API: `http://localhost:8000`
-- UI: `http://localhost:8501`
+- UI (Gradio): `http://localhost:7860`
 
 Stop:
 

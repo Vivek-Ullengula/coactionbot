@@ -29,9 +29,9 @@ services:
   ui:
     build:
       context: ./ui
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gradio
     ports:
-      - "8501:8501"
+      - "7860:7860"
     environment:
       API_BASE_URL: http://api:8000/api/v1
       BEDROCK_KB_ID: ${BEDROCK_KB_ID}
