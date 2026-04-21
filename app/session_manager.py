@@ -140,21 +140,23 @@ class SessionManager:
         content: str
     ) -> None:
         """
-        Add a message to the session history.
-        
-        Args:
-            session_id: Session identifier
-            role: Message role ("user" or "assistant")
-            content: Message content
-            
-        Raises:
-            ValueError: If session not found
+        Add a message to the session history. Auto-creates session if not found.
         """
-        session = self.get_session(session_id)
-        if not session:
-            raise ValueError(f"Session {session_id} not found")
-        
         with self._lock:
+            session = self.sessions.get(session_id)
+            if not session:
+                # Auto-create session
+                now = datetime.utcnow()
+                session = ConversationSession(
+                    session_id=session_id,
+                    created_at=now,
+                    last_accessed=now,
+                    messages=[],
+                    metadata={}
+                )
+                self.sessions[session_id] = session
+            
+            session.last_accessed = datetime.utcnow()
             session.messages.append({
                 "role": role,
                 "content": content,

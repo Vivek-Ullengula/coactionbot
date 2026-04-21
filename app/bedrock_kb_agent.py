@@ -1,25 +1,27 @@
 """
-Conversational RAG Agent using AWS Bedrock Knowledge Base.
-Uses OpenAI GPT-4o for reasoning and Bedrock KB for retrieval.
+Conversational RAG Agent using AWS Bedrock Knowledge Base (backed by Aurora PGVector).
+Uses OpenAI GPT-4o for reasoning.
 """
+import boto3
+import re
 import asyncio
-import os
-from strands import Agent
+from typing import AsyncGenerator
+from strands import Agent, tool
 from strands.models.openai import OpenAIModel
-from strands_tools import retrieve
 from app.config import get_settings
 from app.session_manager import SessionManager
 from app.logger import get_logger
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 SYSTEM_PROMPT = """<role>
 You are an expert Coaction underwriting assistant. Your sole purpose is to answer underwriting queries using ONLY the provided knowledge base containing the General Liability Manual and the Property Manual.
 </role>
  
 <tool_usage_rules>
-- You have a "retrieve" tool that searches the Bedrock Knowledge Base.
-- Call the retrieve tool ONCE per user question with a well-crafted search query.
+- You have a "search_manuals" tool that searches the Bedrock Knowledge Base.
+- Call the search_manuals tool ONCE per user question with a well-crafted search query.
 - After receiving results, evaluate them immediately for ambiguity or missing context.
 - If the first retrieval returns no relevant results, follow the fallback protocol. Do NOT retry.
 </tool_usage_rules>
@@ -56,8 +58,8 @@ CLARIFICATION RULES:
 - Generate response ONLY once you have non-ambiguous, specific context.
 - The response must be:
   - Direct and precise.
-  - Fully cited: For every fact or requirement provided, you MUST append the specific source URL found in the tool metadata.
-  - Every answer must end with a "Sources:" section listing the unique URLs used.
+  - Fully cited: For every fact or requirement provided, you MUST append the specific raw source URL (starting with http) found in the tool metadata. DO NOT convert these to [1] or [Source 1].
+  - Every answer must end with a "Sources:" section listing every unique URL and its corresponding heading used in the answer.
 </answer_generation>
  
 <response_format>
@@ -75,50 +77,87 @@ CLARIFICATION RULES:
 - MISSING DATA: If the query is within scope but no answer is found in the manuals, respond EXACTLY with: "Please contact a Coaction underwriter."
 </fallback_protocol>"""
 
+@tool
+def search_manuals(query: str) -> str:
+    """Search the Coaction underwriting manuals (General Liability and Property) using the AWS Knowledge Base.
+
+    Args:
+        query: The search query to find relevant manual content.
+    """
+    try:
+        client = boto3.client(
+            'bedrock-agent-runtime',
+            region_name=settings.aws_region,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key
+        )
+        
+        logger.info("searching_bedrock_kb", query=query, kb_id=settings.bedrock_kb_id)
+        
+        response = client.retrieve(
+            knowledgeBaseId=settings.bedrock_kb_id,
+            retrievalQuery={'text': query},
+            retrievalConfiguration={
+                'vectorSearchConfiguration': {
+                    'numberOfResults': 5
+                }
+            }
+        )
+        
+        results = response.get('retrievalResults', [])
+        logger.info("retrieval_complete", result_count=len(results))
+        
+        if not results:
+            return "No relevant information found in the manuals."
+            
+        formatted_results = []
+        for r in results:
+            content = r.get('content', {}).get('text', '')
+            meta = r.get('metadata', {})
+            
+            # Extract metadata attributes we saved during S3 upload
+            source = meta.get('source_url', 'Unknown Source')
+            heading = meta.get('heading', 'General Info')
+            
+            formatted_results.append(f"--- DOCUMENT ---\nHeading: {heading}\nSource: {source}\n\n{content}\n")
+            
+        return "\n\n".join(formatted_results)
+        
+    except Exception as e:
+        logger.error("bedrock_retrieval_failed", error=str(e))
+        return f"Error searching manuals: {str(e)}"
+
 
 class BedrockKBAgent:
-    """Strands Agent with OpenAI LLM and Bedrock Knowledge Base retrieval."""
+    """Strands Agent with OpenAI LLM and Managed AWS Bedrock Knowledge Base (Aurora)."""
 
-    def __init__(self, session_manager: SessionManager, knowledge_base_id: str | None = None):
+    def __init__(self, session_manager: SessionManager):
         self.session_manager = session_manager
         self.agents: dict[str, Agent] = {}
         self.settings = get_settings()
-        self.knowledge_base_id = knowledge_base_id or self.settings.bedrock_kb_id
-        if not self.knowledge_base_id:
-            raise ValueError("BEDROCK_KB_ID is required")
         if not self.settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required")
-        logger.info("bedrock_kb_agent_initialized", kb_id=self.knowledge_base_id)
+        logger.info("bedrock_kb_agent_initialized", kb_id=self.settings.bedrock_kb_id)
 
     def _get_or_create_agent(self, session_id: str) -> Agent:
         if session_id not in self.agents:
-            logger.info("creating_agent_for_session", session_id=session_id)
-            
-            # Set environment variables for the retrieve tool (still uses Bedrock KB via boto3)
-            os.environ["KNOWLEDGE_BASE_ID"] = self.knowledge_base_id
-            os.environ["AWS_REGION"] = self.settings.aws_region
-            if self.settings.aws_access_key_id:
-                os.environ["AWS_ACCESS_KEY_ID"] = self.settings.aws_access_key_id
-            if self.settings.aws_secret_access_key:
-                os.environ["AWS_SECRET_ACCESS_KEY"] = self.settings.aws_secret_access_key
-            
-            # Initialize OpenAI model (GPT-4o)
+            # Initialize OpenAI model
             model = OpenAIModel(
                 client_args={
                     "api_key": self.settings.openai_api_key,
                 },
                 model_id=self.settings.openai_chat_model,
                 params={
-                    "temperature": 0.2,
+                    "temperature": 0,
                     "max_tokens": 2048
                 }
             )
             
-            # Create agent with KB retrieve tool
+            # Create agent with the managed search tool
             self.agents[session_id] = Agent(
                 model=model,
                 system_prompt=SYSTEM_PROMPT,
-                tools=[retrieve],
+                tools=[search_manuals],
             )
         
         return self.agents[session_id]
@@ -128,127 +167,51 @@ class BedrockKBAgent:
         session_id: str,
         query: str,
         top_k: int = 5
-    ) -> tuple[str, list[str], list[str]]:
-        """Process a query within a conversation session."""
-        logger.info("processing_query", session_id=session_id)
+    ) -> AsyncGenerator[tuple[str, list[str], list[str]], None]:
+        """Stream a query within a conversation session."""
+        logger.info("processing_query_stream", session_id=session_id)
 
-        agent = self._get_or_create_agent(session_id)
-        self.session_manager.add_message(session_id, "user", query)
-
-        # Run agent
-        response = await asyncio.to_thread(lambda: agent(query))
-        answer = str(response)
-
-        self.session_manager.add_message(session_id, "assistant", answer)
-        logger.info("query_processed", session_id=session_id)
-
-        # Extract sources and generate follow-up questions
-        sources, follow_up_questions = await asyncio.gather(
-            self._extract_sources_from_response(answer),
-            self._generate_follow_up_questions(query, answer),
-        )
-
-        # Strip inline follow-up block from answer text to avoid duplication
-        # (follow-ups are shown as clickable buttons in the UI instead)
-        clean_answer, _ = self._parse_inline_follow_ups(answer)
-
-        return clean_answer, sources, follow_up_questions
-
-    # Phrases that indicate the answer was NOT grounded in retrieved content
-    _FALLBACK_PHRASES = (
-        "i can only answer binding authority related questions",
-        "please contact a coaction underwriter",
-        "not available in the binding authority",
-        "please contact your underwriter",
-        "i can only assist with",
-        "no relevant context found",
-    )
-
-    async def _extract_sources_from_response(self, answer: str) -> list[str]:
-        """Extract source URLs from agent response."""
-        # Don't show sources for fallback / out-of-scope answers
-        answer_lower = answer.lower()
-        if any(phrase in answer_lower for phrase in self._FALLBACK_PHRASES):
-            return []
-        
-        # Bedrock KB includes citations in response
-        # Extract URLs from citations if present
-        import re
-        urls = re.findall(r'https?://[^\s<>"]+', answer)
-        return list(dict.fromkeys(urls))[:3]  # Dedupe and limit to 3
-
-    def _parse_inline_follow_ups(self, answer: str) -> tuple[str, list[str]]:
-        """Parse follow-up questions already embedded in the agent's response.
-        
-        The system prompt instructs the agent to append:
-          **You might also want to ask:**
-          1. [question]
-          2. [question]
-          3. [question]
-        
-        Returns the cleaned answer (without the follow-up block) and the parsed questions.
-        """
-        import re
-        # Match the follow-up block at the end of the response
-        pattern = r'\*\*You might also want to ask:\*\*\s*\n((?:\s*\d+\.\s*.+\n?)+)'
-        match = re.search(pattern, answer)
-        if not match:
-            return answer, []
-        
-        # Extract questions
-        block = match.group(1)
-        questions = re.findall(r'\d+\.\s*(.+)', block)
-        questions = [q.strip().rstrip('?') + '?' for q in questions if q.strip()]
-        
-        # Remove the follow-up block from the answer
-        clean_answer = answer[:match.start()].rstrip()
-        
-        return clean_answer, questions[:3]
-
-    async def _generate_follow_up_questions(self, query: str, answer: str) -> list[str]:
-        """Generate follow-up questions.
-        
-        First tries to parse follow-ups already embedded in the agent's response
-        (per the system prompt). Falls back to a separate LLM call if none found.
-        """
-        # Try parsing inline follow-ups first
-        _, inline_questions = self._parse_inline_follow_ups(answer)
-        if inline_questions:
-            return inline_questions
-        
-        # Fallback: generate via separate LLM call
         try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=self.settings.openai_api_key)
+            # Initial state
+            yield "🔍 Searching Coaction manuals...", [], []
             
-            prompt = (
-                f"Based on the following underwriting conversation, generate exactly 3 relevant "
-                f"follow-up questions the user might want to ask next.\n\n"
-                f"User's Question: {query}\n\n"
-                f"Agent's Response: {answer}\n\n"
-                f"Requirements:\n"
-                f"- Questions must be strictly related to Coaction underwriting topics "
-                f"(General Liability Manual or Property Manual)\n"
-                f"- If the agent asked a clarification question, suggest questions that "
-                f"help the user provide the missing details\n"
-                f"- Keep each question concise (under 100 characters)\n"
-                f"- Return only the questions, one per line, without numbering or bullets"
-            )
+            agent = self._get_or_create_agent(session_id)
             
-            response = await client.chat.completions.create(
-                model=self.settings.openai_chat_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=200,
-            )
-            text = response.choices[0].message.content or ""
-            return [q.strip() for q in text.strip().split("\n") if q.strip()][:3]
-        except Exception as e:
-            logger.warning("follow_up_generation_failed", error=str(e))
-            return []
+            # Simulate a small delay for retrieval start to ensure UI updates
+            await asyncio.sleep(0.1)
+            
+            # Add user message to memory
+            self.session_manager.add_message(session_id, "user", query)
+            
+            # Second state
+            yield "📝 Analyzing manual content...", [], []
+            
+            # Execute agent synchronously (Strands call)
+            # We wrap it in a thread to keep the loop free if needed, but since it's one-at-a-time it's fine
+            response = agent(query)
+            answer = str(response)
+            
+            # Save assistant response
+            self.session_manager.add_message(session_id, "assistant", answer)
+            
+            # 1. Extract Follow-up Questions
+            follow_up_questions = []
+            fu_marker = "**You might also want to ask:**"
+            if fu_marker in answer:
+                parts = answer.split(fu_marker)
+                answer = parts[0].strip()
+                fu_text = parts[1]
+                matches = re.findall(r"\d+\.\s*(.+)", fu_text)
+                follow_up_questions = [m.strip() for m in matches if m.strip()][:3]
 
-    def clear_session(self, session_id: str) -> None:
-        """Clear conversation session."""
-        self.session_manager.clear_session(session_id)
-        self.agents.pop(session_id, None)
-        logger.info("session_cleared", session_id=session_id)
+            # 2. Extract Sources
+            found_urls = re.findall(r"(https?://[^\s\)\n<>]+)", answer)
+            seen = set()
+            sources = [x.strip(".,;:?!") for x in found_urls if not (x in seen or seen.add(x))]
+
+            # Final yield
+            yield answer, sources, follow_up_questions
+            
+        except Exception as e:
+            logger.error("query_failed", session_id=session_id, error=str(e))
+            yield f"Error: {str(e)}", [], []

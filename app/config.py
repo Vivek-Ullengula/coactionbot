@@ -12,14 +12,22 @@ class Settings(BaseSettings):
 
     # AWS Bedrock
     bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
-    bedrock_kb_id: str
+    bedrock_kb_id: str | None = None
 
     # S3
-    s3_bucket_name: str  # Bucket for KB documents (required)
+    s3_bucket_name: str | None = None # Optional for Aurora flow
 
     # OpenAI
     openai_api_key: str
     openai_chat_model: str = "gpt-4o"
+    embedding_model: str = "text-embedding-3-small"
+
+    # Aurora PostgreSQL
+    db_host: str | None = None
+    db_name: str = "postgres"
+    db_user: str = "postgres"
+    db_password: str | None = None
+    db_port: int = 5432
 
     # Crawler
     max_crawl_depth: int = 2

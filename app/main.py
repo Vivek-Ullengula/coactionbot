@@ -22,8 +22,7 @@ async def lifespan(app: FastAPI):
     logger.info("initializing_bedrock_kb_agent", kb_id=settings.bedrock_kb_id)
     from app.bedrock_kb_agent import BedrockKBAgent
     conversational_agent = BedrockKBAgent(
-        session_manager=session_manager,
-        knowledge_base_id=settings.bedrock_kb_id
+        session_manager=session_manager
     )
 
     set_session_manager(session_manager)

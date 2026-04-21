@@ -1,592 +1,247 @@
 """
-Gradio UI for Coaction Bot.
-Connects to the FastAPI backend for RAG queries against Bedrock Knowledge Base.
-Displays follow-up questions as clickable buttons and sources as links.
-
-Compatible with Gradio 6.x.
+Coaction Underwriting Assistant — Gradio 6.5 UI
+Minimalist monochrome design with real-time streaming.
 """
 import gradio as gr
 import requests
+import json
 import os
 import uuid
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
 
-# -- Session management -------------------------------------------------------
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def create_session() -> str:
-    """Create a new backend session and return session_id."""
+def new_session_id() -> str:
+    return str(uuid.uuid4())
+
+def api_health() -> str:
     try:
-        resp = requests.post(f"{API_BASE}/session/create", json={}, timeout=5)
-        resp.raise_for_status()
-        return resp.json().get("session_id", str(uuid.uuid4()))
+        r = requests.get(API_BASE.replace("/api/v1", "/health"), timeout=2)
+        return "🟢 Online" if r.ok else "🟡 Degraded"
     except Exception:
-        return str(uuid.uuid4())
+        return "🔴 Offline"
 
+# ─── Theme ───────────────────────────────────────────────────────────────────
 
-def check_api_health() -> str:
-    """Check backend API health."""
-    try:
-        resp = requests.get(API_BASE.replace("/api/v1", "/health"), timeout=3)
-        if resp.ok:
-            return "🟢 API Online"
-        return "🟡 API Degraded"
-    except Exception:
-        return "🔴 API Unreachable"
+THEME = gr.themes.Monochrome(
+    font=gr.themes.GoogleFont("Inter"),
+    radius_size=gr.themes.sizes.radius_sm,
+)
 
+# ─── CSS ─────────────────────────────────────────────────────────────────────
 
-# -- Query backend ------------------------------------------------------------
+CSS = """
+/* Lock the chat column so nothing shrinks */
+#chat-col { min-height: 820px; }
 
-def query_backend(message: str, session_id: str, top_k: int = 5) -> dict:
-    """Send query to FastAPI backend and return structured response."""
-    try:
-        resp = requests.post(
-            f"{API_BASE}/query",
-            json={
-                "query": message,
-                "top_k": top_k,
-                "session_id": session_id,
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "answer": data.get("answer", "No answer received."),
-            "sources": data.get("sources", []),
-            "follow_up_questions": data.get("follow_up_questions", []),
-            "session_id": data.get("session_id", session_id),
-        }
-    except requests.exceptions.Timeout:
-        return {
-            "answer": "The request timed out. Please try again.",
-            "sources": [],
-            "follow_up_questions": [],
-            "session_id": session_id,
-        }
-    except Exception as e:
-        return {
-            "answer": f"Error communicating with backend: {str(e)}",
-            "sources": [],
-            "follow_up_questions": [],
-            "session_id": session_id,
-        }
+/* Chatbot fixed height */
+#chatbot { height: 680px !important; }
 
+/* Smaller text in messages */
+#chatbot .message-wrap { font-size: 0.88rem !important; line-height: 1.55 !important; }
 
-# -- Format response with sources ---------------------------------------------
+/* Follow-up row */
+.fu-row button { font-size: 0.8rem !important; text-align: left !important; }
 
-def format_response_with_sources(answer: str, sources: list[str]) -> str:
-    """Format the answer with clickable numbered sources below."""
-    formatted = answer.strip()
+/* Suggestion row */
+.sug-row button { font-size: 0.78rem !important; }
 
-    if sources:
-        formatted += "\n\n---\n**Sources:** &nbsp; "
-        source_links = []
-        for i, url in enumerate(sources, 1):
-            source_links.append(f"[[{i}]]({url})")
-        formatted += " &nbsp; ".join(source_links)
+/* Input */
+#msg-box textarea { font-size: 0.88rem !important; }
 
-    return formatted
+/* Links in messages */
+#chatbot a { color: #334155 !important; font-weight: 600 !important; text-decoration: underline !important; }
 
-
-# -- Chat handler --------------------------------------------------------------
-
-def chat_handler(
-    message: str,
-    history: list[dict],
-    session_id: str,
-    top_k: int,
-):
-    """
-    Main chat handler. Sends the message to the backend, gets structured
-    response, and returns the formatted answer with sources and follow-ups.
-    """
-    if not message or not message.strip():
-        yield (
-            history or [],
-            session_id,
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False),
-        )
-        return
-
-    # Create session on first message
-    if not session_id:
-        session_id = create_session()
-
-    # Build chat history with user message immediately
-    history = history or []
-    history.append({"role": "user", "content": message})
-    
-    # Yield history immediately to show user message
-    yield history, session_id, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
-
-    # Add temporary "thinking" message
-    thinking_html = """
-    <div class="thinking-dots">
-        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-    </div>
-    """
-    history.append({"role": "assistant", "content": thinking_html})
-    yield history, session_id, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
-
-    # Query backend
-    result = query_backend(message, session_id, top_k)
-    answer = result["answer"]
-    sources = result["sources"]
-    follow_ups = result["follow_up_questions"]
-    session_id = result["session_id"]
-
-    # Format response with sources
-    formatted_answer = format_response_with_sources(answer, sources)
-
-    # Replace "thinking" message with actual response
-    history[-1] = {"role": "assistant", "content": formatted_answer}
-
-    # Build follow-up button updates
-    fu1 = (
-        gr.update(value=follow_ups[0], visible=True)
-        if len(follow_ups) > 0
-        else gr.update(visible=False)
-    )
-    fu2 = (
-        gr.update(value=follow_ups[1], visible=True)
-        if len(follow_ups) > 1
-        else gr.update(visible=False)
-    )
-    fu3 = (
-        gr.update(value=follow_ups[2], visible=True)
-        if len(follow_ups) > 2
-        else gr.update(visible=False)
-    )
-
-    yield history, session_id, fu1, fu2, fu3
-
-
-def follow_up_click(
-    fu_text: str,
-    history: list[dict],
-    session_id: str,
-    top_k: int,
-):
-    """Handle follow-up button clicks by sending the question as a new message."""
-    yield from chat_handler(fu_text, history, session_id, top_k)
-
-
-def clear_chat():
-    """Clear conversation and reset state."""
-    return [], "", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
-
-
-# -- Custom CSS ----------------------------------------------------------------
-
-CUSTOM_CSS = """
-/* -- Global -- */
-:root {
-    --primary: #f97316;
-    --primary-hover: #ea580c;
-    --bg-light: #f9fafb;
-    --bg-card: #ffffff;
-    --bg-input: #ffffff;
-    --text-primary: #111827;
-    --text-secondary: #4b5563;
-    --border: #e5e7eb;
-    --accent-glow: rgba(249, 115, 22, 0.05);
-}
-
-.gradio-container {
-    background: var(--bg-light) !important;
-    max-width: 1200px !important;
-    margin: 0 auto !important;
-    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif !important;
-}
-
-/* -- Header -- */
-.app-header {
-    text-align: center;
-    padding: 2.5rem 1rem 1.5rem;
-    background: #ffffff;
-    border-bottom: 1px solid var(--border);
-    border-radius: 16px 16px 0 0;
-    margin-bottom: 0;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-}
-.app-header h1 {
-    font-size: 2rem;
-    font-weight: 800;
-    color: var(--primary);
-    margin: 0 0 0.5rem 0;
-    letter-spacing: -0.025em;
-}
-.app-header p {
-    color: var(--text-secondary);
-    font-size: 0.95rem;
-    margin: 0;
-}
-
-/* -- Chatbot area -- */
-.chatbot-container {
-    border: 1px solid var(--border) !important;
-    border-radius: 0 0 16px 16px !important;
-    background: #ffffff !important;
-    min-height: 520px !important;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
-}
-
-/* -- Follow-up buttons -- */
-.follow-up-container {
-    display: flex;
-    gap: 0.75rem;
-    padding: 1rem 0;
-    flex-wrap: wrap;
-    justify-content: center;
-}
-.follow-up-btn {
-    flex: 1;
-    min-width: 200px;
-    max-width: 380px;
-}
-.follow-up-btn button {
-    width: 100% !important;
-    background: #ffffff !important;
-    border: 1px solid var(--border) !important;
-    color: var(--text-primary) !important;
-    border-radius: 12px !important;
-    padding: 0.75rem 1.25rem !important;
-    font-size: 0.875rem !important;
-    line-height: 1.5 !important;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    cursor: pointer !important;
-    text-align: left !important;
-    white-space: normal !important;
-    min-height: 50px !important;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
-}
-.follow-up-btn button:hover {
-    background: var(--bg-light) !important;
-    border-color: var(--primary) !important;
-    color: var(--primary) !important;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05) !important;
-}
-
-/* -- Input textbox -- */
-.input-row textarea {
-    background: #ffffff !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 12px !important;
-    color: var(--text-primary) !important;
-    font-size: 0.95rem !important;
-    padding: 0.875rem 1.25rem !important;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
-}
-.input-row textarea:focus {
-    border-color: var(--primary) !important;
-    box-shadow: 0 0 0 4px var(--accent-glow) !important;
-}
-
-/* -- Send button -- */
-.send-btn button {
-    background: var(--primary) !important;
-    color: #ffffff !important;
-    border: none !important;
-    border-radius: 12px !important;
-    padding: 0.875rem 1.75rem !important;
-    font-weight: 700 !important;
-    transition: all 0.2s ease !important;
-}
-.send-btn button:hover {
-    background: var(--primary-hover) !important;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
-}
-
-/* -- Clear button -- */
-.clear-btn button {
-    background: #ffffff !important;
-    border: 1px solid var(--border) !important;
-    color: var(--text-secondary) !important;
-    border-radius: 12px !important;
-}
-.clear-btn button:hover {
-    border-color: #ef4444 !important;
-    color: #ef4444 !important;
-}
-
-/* -- Settings sidebar -- */
-.settings-panel {
-    background: #ffffff !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 16px !important;
-    padding: 1.5rem !important;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-}
-
-/* -- Status badge -- */
-.status-badge {
-    text-align: center;
-    padding: 0.5rem 1rem;
-    border-radius: 9999px;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    background: #f3f4f6;
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
-}
-
-/* -- Source links (Clickable Numbers) -- */
-.message a {
-    color: var(--primary) !important;
-    font-weight: 600 !important;
-    text-decoration: none !important;
-}
-.message a:hover {
-    text-decoration: underline !important;
-}
-
-/* -- Suggestion buttons -- */
-.suggestion-card button {
-    background: #ffffff !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 12px !important;
-    padding: 1rem !important;
-    color: var(--text-primary) !important;
-    font-weight: 500 !important;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
-}
-.suggestion-card button:hover {
-    border-color: var(--primary) !important;
-    background: var(--bg-light) !important;
-    transform: translateY(-2px);
-}
-
-/* -- Thinking indicator -- */
-.thinking-dots {
-    display: flex;
-    gap: 4px;
-}
-.dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--primary);
-    animation: bounce 1.4s infinite ease-in-out both;
-}
-.dot:nth-child(2) { animation-delay: 0.2s; }
-.dot:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes bounce {
-    0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
-    40% { transform: scale(1); opacity: 1; }
-}
-
+/* Hide footer */
 footer { display: none !important; }
 """
 
-# -- Welcome suggestions ------------------------------------------------------
+# ─── Suggestions ─────────────────────────────────────────────────────────────
 
 SUGGESTIONS = [
-    ("What is class code 10040?"),
-    ("Tell me about binding authority property manual"),
-    ("What are the submission requirements for GL?"),
-    ("What operations are prohibited?"),
+    "What is class code 10040?",
+    "Binding authority property manual overview",
+    "What are the GL submission requirements?",
+    "What operations are prohibited?",
 ]
 
-# -- Gradio 6 compatible theme ------------------------------------------------
+# ─── Core chat logic ─────────────────────────────────────────────────────────
 
-THEME = gr.themes.Base(
-    primary_hue=gr.themes.colors.orange,
-    secondary_hue=gr.themes.colors.amber,
-    neutral_hue=gr.themes.colors.slate,
-    font=gr.themes.GoogleFont("Inter"),
-).set(
-    body_background_fill="#f9fafb",
-    body_background_fill_dark="#f9fafb",
-    block_background_fill="#ffffff",
-    block_background_fill_dark="#ffffff",
-    input_background_fill="#ffffff",
-    input_background_fill_dark="#ffffff",
-    body_text_color="#111827",
-    body_text_color_dark="#111827",
-    block_label_text_color="#4b5563",
-    block_label_text_color_dark="#4b5563",
-    border_color_primary="#e5e7eb",
-    border_color_primary_dark="#e5e7eb",
-)
+def respond(message, history, session_id, top_k):
+    """
+    Generator that yields (history, session_id, fu1, fu2, fu3, sug_visible)
+    on every state change so the UI stays responsive.
+    """
+    if not message or not message.strip():
+        yield history, session_id, gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        return
+
+    if not session_id:
+        session_id = new_session_id()
+
+    history = list(history or [])
+
+    # 1. Show user bubble immediately
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": "⏳ Thinking…"})
+    yield (history, session_id,
+           gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+           gr.update(visible=False))
+
+    # 2. Stream from backend
+    try:
+        with requests.post(
+            f"{API_BASE}/query",
+            json={"query": message, "session_id": session_id, "top_k": top_k},
+            stream=True, timeout=120,
+        ) as resp:
+            resp.raise_for_status()
+            for raw_line in resp.iter_lines():
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8")
+                if not line.startswith("data: "):
+                    continue
+                data = json.loads(line[6:])
+
+                if data.get("type") == "status":
+                    history[-1]["content"] = data["message"]
+                    yield (history, session_id,
+                           gr.update(visible=False), gr.update(visible=False),
+                           gr.update(visible=False), gr.update(visible=False))
+
+                elif data.get("type") == "final":
+                    history[-1]["content"] = data["answer"]
+                    fups = data.get("follow_up_questions", [])
+                    fu_updates = []
+                    for i in range(3):
+                        if i < len(fups):
+                            fu_updates.append(gr.update(value=fups[i], visible=True))
+                        else:
+                            fu_updates.append(gr.update(visible=False))
+                    yield (history, session_id, *fu_updates,
+                           gr.update(visible=False))
+
+                elif data.get("type") == "error":
+                    history[-1]["content"] = f"⚠️ {data['message']}"
+                    yield (history, session_id,
+                           gr.update(visible=False), gr.update(visible=False),
+                           gr.update(visible=False), gr.update(visible=False))
+
+    except Exception as exc:
+        history[-1]["content"] = f"⚠️ {exc}"
+        yield (history, session_id,
+               gr.update(visible=False), gr.update(visible=False),
+               gr.update(visible=False), gr.update(visible=False))
 
 
-# -- Build the Gradio app -----------------------------------------------------
+def on_followup(text, history, session_id, top_k):
+    yield from respond(text, history, session_id, top_k)
 
-def build_app() -> gr.Blocks:
-    """Build and return the Gradio Blocks application (Gradio 6 compatible)."""
 
-    with gr.Blocks(title="Coaction Bot") as app:
+def on_clear():
+    return (
+        [],                          # chatbot
+        "",                          # session_state
+        gr.update(visible=False),    # fu1
+        gr.update(visible=False),    # fu2
+        gr.update(visible=False),    # fu3
+        gr.update(visible=True),     # suggestions
+    )
 
-        # -- State --
+# ─── Build App ───────────────────────────────────────────────────────────────
+
+def build():
+    with gr.Blocks(title="Coaction Underwriting Assistant") as app:
+
         session_state = gr.State("")
 
-        # -- Sidebar for Settings --
-        with gr.Sidebar(label="Settings", open=False):
-            gr.Markdown("### ⚙️ Underwriting Settings")
-            top_k_slider = gr.Slider(
-                minimum=1,
-                maximum=20,
-                value=5,
-                step=1,
-                label="Results to retrieve",
-                info="Number of KB chunks to search",
-            )
-            gr.Markdown("---")
-            kb_id = os.getenv("BEDROCK_KB_ID", "")
-            gr.Markdown(
-                f"**KB ID:** `{kb_id}`" if kb_id else "**KB ID:** _not set_",
-            )
-            status_text = check_api_health()
-            gr.HTML(f'<div class="status-badge">{status_text}</div>')
-            gr.Markdown("---")
-            gr.Markdown(
-                '<p style="font-size:0.75rem;color:#6b7280;text-align:center;">'
-                "Coaction Binding Authority<br>Underwriting Assistant</p>"
+        # ── Settings sidebar ──
+        with gr.Sidebar(label="⚙ Settings", open=False):
+            top_k = gr.Slider(1, 20, value=5, step=1, label="Search depth")
+            gr.HTML(f'<p style="font-size:0.72rem;color:#64748b;margin-top:8px;">'
+                    f'API: {api_health()}</p>')
+
+        # ── Main column (locked height) ──
+        with gr.Column(elem_id="chat-col"):
+
+            chatbot = gr.Chatbot(
+                elem_id="chatbot",
+                height=680,
+                show_label=False,
+                avatar_images=(
+                    None,
+                    "https://www.coactionspecialty.com/favicon.ico",
+                ),
+                placeholder=(
+                    '<div style="text-align:center;padding:12rem 1rem;color:#94a3b8;">'
+                    '<p style="font-size:1.1rem;font-weight:600;color:#1e293b;">'
+                    'Coaction Underwriting Assistant</p>'
+                    '<p style="font-size:0.82rem;">Ask about class codes, '
+                    'coverage options, or manual guidelines.</p></div>'
+                ),
             )
 
-        # -- Main Chat Area --
-        with gr.Row():
-            with gr.Column(scale=1):
-                chatbot = gr.Chatbot(
-                    label="Chat",
-                    height=600,
-                    buttons=["copy"],
-                    avatar_images=(
-                        None, 
-                        "https://www.coactionspecialty.com/favicon.ico"
-                    ),
-                    elem_classes=["chatbot-container"],
-                    placeholder=(
-                        '<div style="text-align:center; padding: 5rem 1rem; color: #9ca3b8;">'
-                        '<p style="font-size:1.5rem; font-weight:600; '
-                        "background:linear-gradient(135deg,#f97316,#fbbf24);"
-                        "-webkit-background-clip:text;-webkit-text-fill-color:transparent;"
-                        'margin-bottom:0.5rem;">How can I help you today?</p>'
-                        '<p style="font-size:0.95rem; opacity: 0.8;">Ask me about class codes, '
-                        "underwriting guidelines, or coverage details.</p></div>"
-                    ),
+            # ── Follow-up buttons ──
+            with gr.Row(elem_classes=["fu-row"]):
+                fu1 = gr.Button(visible=False, size="sm")
+                fu2 = gr.Button(visible=False, size="sm")
+                fu3 = gr.Button(visible=False, size="sm")
+
+            # ── Suggestion chips (hidden after first message) ──
+            with gr.Row(visible=True, elem_classes=["sug-row"]) as sug_row:
+                sug_btns = []
+                for txt in SUGGESTIONS:
+                    sug_btns.append(gr.Button(txt, size="sm", variant="secondary"))
+
+            # ── Input bar ──
+            with gr.Row():
+                msg = gr.Textbox(
+                    elem_id="msg-box",
+                    placeholder="Type your underwriting query…",
+                    show_label=False,
+                    scale=8,
+                    lines=1,
+                    max_lines=3,
                 )
+                send = gr.Button("Send", variant="primary", scale=1, min_width=80)
+                clear = gr.Button("Clear", scale=1, min_width=60)
 
-                # -- Follow-up question buttons --
-                gr.HTML(
-                    '<div id="fu-label" style="display:none; text-align:center; '
-                    'font-size:0.78rem; color:#6b7280; margin-top:0.3rem;">'
-                    "Suggested follow-up questions</div>"
-                )
-                with gr.Row(elem_classes=["follow-up-container"]):
-                    fu_btn_1 = gr.Button(
-                        visible=False,
-                        elem_classes=["follow-up-btn"],
-                        size="sm",
-                    )
-                    fu_btn_2 = gr.Button(
-                        visible=False,
-                        elem_classes=["follow-up-btn"],
-                        size="sm",
-                    )
-                    fu_btn_3 = gr.Button(
-                        visible=False,
-                        elem_classes=["follow-up-btn"],
-                        size="sm",
-                    )
+        # ── Wiring ──
+        outs  = [chatbot, session_state, fu1, fu2, fu3, sug_row]
+        ins   = [msg, chatbot, session_state, top_k]
 
-                # -- Input row --
-                with gr.Row():
-                    msg_input = gr.Textbox(
-                        placeholder="Message Coaction Bot...",
-                        show_label=False,
-                        scale=6,
-                        container=False,
-                        elem_classes=["input-row"],
-                        lines=1,
-                        max_lines=4,
-                    )
-                    send_btn = gr.Button(
-                        "Send",
-                        scale=1,
-                        elem_classes=["send-btn"],
-                        variant="primary",
-                    )
-                    clear_btn = gr.Button(
-                        "Clear",
-                        scale=1,
-                        elem_classes=["clear-btn"],
-                    )
+        # Send / Enter
+        send.click(respond, ins, outs).then(lambda: "", None, [msg])
+        msg.submit(respond, ins, outs).then(lambda: "", None, [msg])
 
-                # -- Suggestion cards --
-                gr.HTML(
-                    '<p style="text-align:center;color:#6b7280;font-size:0.8rem;'
-                    'margin-top:0.5rem;">Try one of these questions</p>'
-                )
-                with gr.Row():
-                    sug_btns = []
-                    for text in SUGGESTIONS:
-                        btn = gr.Button(
-                            text,
-                            elem_classes=["suggestion-card"],
-                            size="sm",
-                        )
-                        sug_btns.append((btn, text))
+        # Follow-ups
+        for btn in (fu1, fu2, fu3):
+            btn.click(on_followup, [btn, chatbot, session_state, top_k], outs)
 
-        # -- Wire events -------------------------------------------------------
-
-        chat_outputs = [chatbot, session_state, fu_btn_1, fu_btn_2, fu_btn_3]
-        chat_inputs = [msg_input, chatbot, session_state, top_k_slider]
-
-        # Send button
-        send_btn.click(
-            fn=chat_handler,
-            inputs=chat_inputs,
-            outputs=chat_outputs,
-        ).then(fn=lambda: "", outputs=[msg_input])
-
-        # Enter key
-        msg_input.submit(
-            fn=chat_handler,
-            inputs=chat_inputs,
-            outputs=chat_outputs,
-        ).then(fn=lambda: "", outputs=[msg_input])
-
-        # Follow-up button clicks
-        for fu_btn in [fu_btn_1, fu_btn_2, fu_btn_3]:
-            fu_btn.click(
-                fn=follow_up_click,
-                inputs=[fu_btn, chatbot, session_state, top_k_slider],
-                outputs=chat_outputs,
-            )
-
-        # Suggestion button clicks
-        for btn, question_text in sug_btns:
-            # Use default argument to capture the closure variable properly
-            btn.click(
-                fn=lambda q=question_text: q,
-                outputs=[msg_input],
+        # Suggestion chips
+        for sb in sug_btns:
+            sb.click(
+                lambda t=sb.value: t, None, [msg]
             ).then(
-                fn=chat_handler,
-                inputs=chat_inputs,
-                outputs=chat_outputs,
-            ).then(fn=lambda: "", outputs=[msg_input])
+                respond, ins, outs
+            ).then(
+                lambda: "", None, [msg]
+            )
 
-        # Clear chat
-        clear_btn.click(fn=clear_chat, outputs=chat_outputs)
+        # Clear
+        clear.click(on_clear, None, outs)
 
     return app
 
 
-# -- Launch --------------------------------------------------------------------
+# ─── Launch ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    demo = build_app()
-    demo.launch(
+    build().launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
-        show_error=True,
-        css=CUSTOM_CSS,
         theme=THEME,
+        css=CSS,
     )

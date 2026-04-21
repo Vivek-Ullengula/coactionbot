@@ -1,316 +1,307 @@
-# Coaction Bot
+# Coaction Underwriting Assistant
 
-Clean codebase with one main flow:
+An AI-powered underwriting assistant that helps Coaction Specialty underwriters search General Liability and Property manuals using natural language. Built on AWS Bedrock Knowledge Base with Aurora PostgreSQL (PGVector) for hybrid search.
 
-1. Scrape website content.
-2. Upload cleaned text to S3.
-3. Ingest in Bedrock Knowledge Base from AWS Console.
-4. Ask questions in UI/API or AgentCore runtime.
+## Architecture
 
-## Current Structure
-
-```text
-app/
-  api/routes.py
-  api/sessions.py
-  bedrock_kb_agent.py
-  bedrock_kb_indexer.py
-  config.py
-  html_cleaner.py
-  main.py
-  models.py
-  s3_uploader.py
-  session_manager.py
-  simple_crawler.py
-
-agentcore_runtime/
-  agentcore_entrypoint.py
-
-ui/
-  app.py              # Streamlit UI (legacy)
-  gradio_app.py       # Gradio UI (current)
-  Dockerfile          # Streamlit Dockerfile
-  Dockerfile.gradio   # Gradio Dockerfile
-
-.bedrock_agentcore.yaml
-docker-compose.yml
-Dockerfile
-requirements.txt
-scrape.py
-query.py
-README.md
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────────┐
+│  Gradio UI      │────▶│  FastAPI Backend  │────▶│  OpenAI GPT-4o (LLM)   │
+│  localhost:7860  │     │  localhost:8000   │     │  + Strands Agent        │
+└─────────────────┘     └──────────────────┘     └───────────┬─────────────┘
+                                                             │
+                                                    search_manuals() tool
+                                                             │
+                                                             ▼
+                                                ┌─────────────────────────┐
+                                                │  AWS Bedrock KB         │
+                                                │  (Retrieve API)         │
+                                                │  ┌───────────────────┐  │
+                                                │  │ Aurora PostgreSQL │  │
+                                                │  │ + PGVector        │  │
+                                                │  │ (HNSW + GIN)     │  │
+                                                │  └───────────────────┘  │
+                                                └─────────────────────────┘
 ```
 
-## Why Only One Dependency File
+**How it works:**
+1. User asks a question in the Gradio UI
+2. FastAPI streams the request to the Strands Agent (OpenAI GPT-4o)
+3. The agent calls `search_manuals()` — a tool that hits the AWS Bedrock Retrieve API
+4. Bedrock performs hybrid search (vector + keyword) against Aurora PGVector
+5. The agent synthesizes a cited answer from the retrieved manual chunks
+6. Response streams back to the UI with status updates, follow-up suggestions, and source links
 
-This repo now uses only `requirements.txt`.
-`pyproject.toml` was removed to avoid duplicate dependency management.
+## Project Structure
 
-## Required .env
-
-Create `.env` from `.env.example`:
-
-```bash
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-S3_BUCKET_NAME=your-crawl-bucket
-BEDROCK_KB_ID=your-existing-kb-id
-OPENAI_API_KEY=...
-OPENAI_CHAT_MODEL=gpt-4o
-MAX_CRAWL_DEPTH=2
-MAX_PAGES_PER_CRAWL=50
-CRAWL_CONCURRENCY=5
-LOG_LEVEL=INFO
+```
+coactionbot/
+├── app/                          # Backend application
+│   ├── __init__.py
+│   ├── main.py                   # FastAPI app + lifespan (entrypoint)
+│   ├── bedrock_kb_agent.py       # Strands Agent with search_manuals tool
+│   ├── config.py                 # Pydantic settings (reads .env)
+│   ├── models.py                 # Request/response schemas
+│   ├── session_manager.py        # In-memory session + TTL cleanup
+│   ├── logger.py                 # Structured logging (structlog)
+│   ├── add_index.py              # One-time script: GIN + HNSW indexes
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── routes.py             # POST /query (SSE streaming)
+│   │   └── sessions.py           # Session CRUD endpoints
+│   └── crawlers/
+│       └── coaction_crawler.py   # Website scraper (Firecrawl/crawl4ai)
+│
+├── ui/
+│   ├── gradio_app.py             # Gradio 6 chat UI (current)
+│   ├── app.py                    # Streamlit UI (legacy, not maintained)
+│   ├── Dockerfile.gradio         # Docker image for Gradio UI
+│   └── Dockerfile                # Docker image for Streamlit UI (legacy)
+│
+├── agentcore_runtime/
+│   ├── agentcore_entrypoint.py   # AWS Bedrock AgentCore entry point
+│   └── requirements.txt          # AgentCore-specific dependencies
+│
+├── .env                          # Environment variables (DO NOT COMMIT)
+├── .gitignore
+├── .dockerignore
+├── Dockerfile                    # Docker image for FastAPI backend
+├── docker-compose.yml            # Run API + UI together
+├── requirements.txt              # Python dependencies
+├── query.py                      # CLI tool to test queries
+├── scrape.py                     # CLI tool to crawl + upload to S3
+├── global-bundle.pem             # AWS RDS SSL certificate bundle
+└── README.md
 ```
 
-## Local Run
+## Prerequisites
 
-Install:
+- **Python 3.11+**
+- **AWS Account** with:
+  - Bedrock Knowledge Base configured with Aurora PostgreSQL
+  - S3 bucket with ingested manual documents
+  - IAM credentials with `bedrock:Retrieve` permission
+- **OpenAI API Key** (GPT-4o or GPT-4o-mini)
+
+## Quick Start (First Run)
+
+### 1. Clone and install dependencies
 
 ```bash
+git clone <repository-url>
+cd coactionbot
+
+# Create virtual environment
 python -m venv .venv
+
+# Activate (Windows PowerShell)
 .\.venv\Scripts\Activate.ps1
+
+# Activate (macOS/Linux)
+source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-Run API:
+### 2. Configure environment variables
 
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+Create a `.env` file in the project root:
+
+```env
+# AWS
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+BEDROCK_KB_ID=your-knowledge-base-id
+
+# Aurora PostgreSQL (only needed if running add_index.py)
+DB_HOST=your-aurora-cluster.us-east-1.rds.amazonaws.com
+DB_NAME=coaction_kb
+DB_USER=coaction_admin
+DB_PASSWORD=your-password
+DB_PORT=5432
+
+# OpenAI
+OPENAI_API_KEY=sk-your-openai-key
+OPENAI_CHAT_MODEL=gpt-4o-mini
+
+# Crawler (optional)
+MAX_CRAWL_DEPTH=2
+MAX_PAGES_PER_CRAWL=500
+CRAWL_CONCURRENCY=5
+
+# Logging
+LOG_LEVEL=INFO
 ```
 
-Run UI (Gradio — recommended):
+### 3. Start the FastAPI backend
+
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+You should see:
+```
+INFO:     Uvicorn running on http://0.0.0.0:8000
+{"event": "ready", "agent_type": "bedrock_kb"}
+```
+
+### 4. Start the Gradio UI
+
+In a **separate terminal** (with the same virtual environment activated):
 
 ```bash
 python ui/gradio_app.py
 ```
 
-Or legacy Streamlit UI:
+Open your browser to **http://localhost:7860** and start chatting.
+
+### 5. (Optional) Test from the command line
 
 ```bash
-cd ui
-streamlit run app.py
+python query.py "What is class code 10040?"
 ```
 
-## Run UI + API with Docker Compose
+## Docker Deployment
 
-Yes, this repo is already dockerized for both services.
-
-Run from project root:
+### Run with Docker Compose (recommended)
 
 ```bash
+# Build and start both services
 docker compose up --build
+
+# Access:
+# - API:  http://localhost:8000
+# - UI:   http://localhost:7860
 ```
 
-Access:
-- API: `http://localhost:8000`
-- UI (Gradio): `http://localhost:7860`
+The `.env` file is automatically read by Docker Compose.
 
-Stop:
+### Run containers individually
+
+**API:**
+```bash
+docker build -t coactionbot-api .
+docker run -p 8000:8000 --env-file .env coactionbot-api
+```
+
+**UI:**
+```bash
+docker build -t coactionbot-ui -f ui/Dockerfile.gradio ui/
+docker run -p 7860:7860 -e API_BASE_URL=http://host.docker.internal:8000/api/v1 coactionbot-ui
+```
+
+## AWS Bedrock Knowledge Base Setup
+
+### Data Ingestion Pipeline
+
+1. **Crawl website content:**
+   ```bash
+   python scrape.py https://bindingauthority.coactionspecialty.com
+   ```
+   This crawls the site and uploads cleaned text to the S3 bucket.
+
+2. **Sync Knowledge Base:**
+   - Open the [AWS Bedrock Console](https://console.aws.amazon.com/bedrock)
+   - Navigate to **Knowledge Bases** → select your KB
+   - Click **Sync** on the data source
+
+3. **Verify:** Ask a question in the UI to confirm retrieval works.
+
+### Database Indexes (one-time setup)
+
+If setting up Aurora for the first time, run the index creation script:
 
 ```bash
-docker compose down
+python -c "from app.add_index import *"
 ```
 
-## Scrape + KB Ingestion
+This creates the required GIN (full-text) and HNSW (vector similarity) indexes.
 
-Run scraper:
+## API Reference
 
-```bash
-python scrape.py https://your-site.com
+### Health Check
+```
+GET /health
+→ {"status": "ok"}
 ```
 
-After scrape upload completes:
+### Query (Streaming SSE)
+```
+POST /api/v1/query
+Content-Type: application/json
 
-1. Open AWS Bedrock console.
-2. Open your Knowledge Base.
-3. Run Sync/Ingestion from the KB data source.
+{
+  "query": "What is class code 10040?",
+  "session_id": "optional-uuid",
+  "top_k": 5
+}
 
-## Query Modes
-
-### 1) API/UI local
-
-- UI calls `POST /api/v1/query`.
-- Agent retrieves from Bedrock KB using `BEDROCK_KB_ID`.
-
-### 2) AgentCore local
-
-```bash
-python agentcore_runtime/agentcore_entrypoint.py
+→ Stream of Server-Sent Events:
+data: {"type": "status", "message": "🔍 Searching Coaction manuals..."}
+data: {"type": "final", "answer": "...", "sources": [...], "follow_up_questions": [...], "session_id": "..."}
 ```
 
-### 3) AgentCore deployed runtime
+### Sessions
+```
+POST /api/v1/session/create  → {"session_id": "uuid"}
+GET  /api/v1/session/{id}    → session details
+```
 
-Deploy via AgentCore CLI, then invoke runtime endpoint.
+## AgentCore Deployment (AWS Managed Runtime)
 
-## AgentCore Setup and Deploy (Detailed)
-
-Use this exact order for first-time setup.
-
-### 1) Authenticate AWS CLI
-
-From PowerShell:
+For deploying as an AWS Bedrock AgentCore runtime:
 
 ```powershell
-aws login
-```
-
-If prompted, choose region (for your case `us-east-1`).
-If `aws login` is not available in your CLI version, use:
-
-```powershell
+# 1. Authenticate
 aws configure
-```
 
-Set:
-- AWS Access Key ID
-- AWS Secret Access Key
-- Default region (`us-east-1`)
-- Output format (`json`)
-
-Verify identity:
-
-```powershell
-aws sts get-caller-identity
-```
-
-### 2) Configure AgentCore project
-
-```powershell
+# 2. Configure AgentCore
 agentcore configure
-```
 
-This reads `.bedrock_agentcore.yaml` and prepares local AgentCore settings.
-
-### 3) Deploy with required runtime env vars
-
-Use a clean multiline command in PowerShell:
-
-```powershell
-$openaiKey = "YOUR_OPENAI_KEY"
-
+# 3. Deploy
 agentcore deploy --agent underwriting_agent `
-  --env BEDROCK_KB_ID=OVA78JS0CN `
+  --env BEDROCK_KB_ID=JATZNTWHAV `
   --env AWS_REGION=us-east-1 `
   --env OPENAI_CHAT_MODEL=gpt-4o `
-  --env OPENAI_API_KEY=$openaiKey
+  --env OPENAI_API_KEY=your-key
+
+# 4. Test
+agentcore invoke "{\"prompt\":\"What is class code 10040?\"}"
 ```
 
-Notes:
-- Keep backtick `` ` `` only for line continuation.
-- Do not leave extra text after a line (that can break parsing and cause API key errors).
-- If `.env.local` exists, AgentCore may also load `OPENAI_API_KEY` from it during deploy.
+> **Important:** After deployment, add an inline IAM policy to the AgentCore runtime role granting `bedrock:Retrieve` and `bedrock:RetrieveAndGenerate` permissions. Without this, the deployed agent will return fallback answers.
 
-### 4) Validate deployment
+## Configuration Reference
 
-```powershell
-agentcore status
-agentcore invoke "{`"prompt`":`"what is class code 10040`"}"
-```
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `AWS_REGION` | Yes | `us-east-1` | AWS region |
+| `AWS_ACCESS_KEY_ID` | Yes | — | IAM access key |
+| `AWS_SECRET_ACCESS_KEY` | Yes | — | IAM secret key |
+| `BEDROCK_KB_ID` | Yes | — | Bedrock Knowledge Base ID |
+| `OPENAI_API_KEY` | Yes | — | OpenAI API key |
+| `OPENAI_CHAT_MODEL` | No | `gpt-4o` | OpenAI model to use |
+| `DB_HOST` | No | — | Aurora cluster endpoint |
+| `DB_NAME` | No | `postgres` | Database name |
+| `DB_USER` | No | `postgres` | Database user |
+| `DB_PASSWORD` | No | — | Database password |
+| `LOG_LEVEL` | No | `INFO` | Logging level |
 
-Expected:
-- Deployment success shows `Agent ARN`, `ECR URI`, and `CodeBuild ID`.
-- Invoke response should return `status: "success"` and a grounded answer when KB has matching data.
+## Troubleshooting
 
-### 5) Check logs when answers look wrong
-
-```powershell
-aws logs tail /aws/bedrock-agentcore/runtimes/<runtime-name>-DEFAULT --log-stream-name-prefix "2026/04/15/[runtime-logs]" --since 1h
-```
-
-Replace `<runtime-name>` with your deployed runtime id (example: `underwriting_agent-dXy3Uj6m45`).
-
-### 6) Grant Bedrock KB permissions to AgentCore runtime role (required)
-
-When `execution_role_auto_create: true`, AgentCore creates a runtime role (for example `AmazonBedrockAgentCoreSDKRuntime-...`).
-Your local tests can pass with your own AWS credentials, but deployed runtime calls use this role.
-
-If this role does not have Bedrock Knowledge Base retrieve permissions, the deployed agent returns fallback answers even though deploy is successful.
-
-Add an inline policy on the runtime role with:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "BedrockKnowledgeBaseRetrieve",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:Retrieve",
-        "bedrock:RetrieveAndGenerate"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-PowerShell example:
-
-```powershell
-$roleName = "AmazonBedrockAgentCoreSDKRuntime-us-east-1-<id>"
-$policyDoc = @'
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "BedrockKnowledgeBaseRetrieve",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:Retrieve",
-        "bedrock:RetrieveAndGenerate"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-'@
-
-aws iam put-role-policy `
-  --role-name $roleName `
-  --policy-name BedrockKnowledgeBaseRetrieveInline `
-  --policy-document $policyDoc
-```
-
-Then re-invoke:
-
-```powershell
-agentcore invoke "{`"prompt`":`"tell me about binding authority property manual`"}"
-```
-
-## Why fallback answers happen after successful deploy
-
-If you get:
-- `Please contact your Coaction underwriter.`
-- `I can only answer binding authority related questions.`
-
-then deployment is working, but retrieval returned no useful context. Check:
-
-1. `BEDROCK_KB_ID` is correct in deploy command.
-2. KB data source points to the S3 path where scraper uploaded files (`web/...`).
-3. Ingestion/sync completed in Bedrock console after scrape upload.
-4. Question matches content that exists in ingested documents.
-5. Same region is used everywhere (`AWS_REGION`, KB region, AgentCore region).
-
-## AgentCore YAML behavior
-
-Before first deploy, `.bedrock_agentcore.yaml` is partly template/config data.
-After deploy, AgentCore populates runtime fields like:
-- `bedrock_agentcore.agent_id`
-- `bedrock_agentcore.agent_arn`
-- active session-related metadata
-
-Auto-create flags currently enabled:
-- `execution_role_auto_create: true`
-- `ecr_auto_create: true`
-- `s3_auto_create: true`
-
-If you already manage IAM/ECR/S3 manually, set them to `false`.
+| Symptom | Cause | Fix |
+|---|---|---|
+| "Session not found" | Backend restarted | Sessions auto-create now; just retry |
+| Fallback answers after deploy | Missing IAM permissions | Add `bedrock:Retrieve` to runtime role |
+| No sources in response | KB not synced | Run Sync in Bedrock Console |
+| Import errors on startup | Stale `.pyc` cache | Delete `__pycache__/` dirs and restart |
+| "API Offline" in UI | Backend not running | Start FastAPI first, then Gradio |
 
 ## Notes
 
-- Removed duplicate root `agentcore_entrypoint.py`; only `agentcore_runtime/agentcore_entrypoint.py` remains.
-- Removed extra docs/tests/examples and generated zip artifact.
-- Removed script-based ingestion helper; ingestion is now expected from AWS Console.
+- `scrape.py` imports a legacy `bedrock_kb_indexer` module — update the import if you need to re-crawl
+- `ui/app.py` (Streamlit) is kept for reference but is **not maintained**
+- The `global-bundle.pem` file is the AWS RDS SSL certificate bundle for secure Aurora connections
+- `app/add_index.py` is a one-time database setup script and can be archived after initial configuration
