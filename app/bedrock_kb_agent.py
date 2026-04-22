@@ -5,7 +5,7 @@ Uses OpenAI GPT-4o for reasoning.
 import boto3
 import re
 import asyncio
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 from app.config import get_settings
@@ -77,6 +77,63 @@ CLARIFICATION RULES:
 - MISSING DATA: If the query is within scope but no answer is found in the manuals, respond EXACTLY with: "Please contact a Coaction underwriter."
 </fallback_protocol>"""
 
+NON_UNDERWRITER_POLICY = """
+<role_based_visibility_policy>
+- You are answering for a non-underwriter user (agent/external).
+- You MUST NOT output raw URLs, hyperlinks, or any "Sources:" section.
+- Keep the underwriting answer complete, but omit all link references.
+</role_based_visibility_policy>
+"""
+
+URL_PATTERN = re.compile(r"https?://[^\s)\]<>]+")
+
+
+def sanitize_non_underwriter_output(answer: str) -> str:
+    answer = re.sub(r"\[([^\]]+)\]\(https?://[^)\s]+\)", r"\1", answer)
+    answer = URL_PATTERN.sub("", answer)
+    answer = re.sub(r"\n\s*Sources:\s*(.|\n)*$", "", answer, flags=re.IGNORECASE)
+    answer = re.sub(r"[ \t]{2,}", " ", answer)
+    answer = re.sub(r"\n{3,}", "\n\n", answer)
+    return answer.strip()
+
+
+class RoleBasedOutputHook:
+    """
+    Strands hook-style output policy for non-underwriters.
+    Uses duck-typing so it remains compatible across SDK event shape changes.
+    """
+
+    def __init__(self, role: str):
+        self.role = (role or "").strip().lower()
+
+    def register_hooks(self, registry) -> None:
+        # Prefer AfterModelCallEvent if available; fallback silently if hook API differs.
+        try:
+            from strands.hooks.events import AfterModelCallEvent
+
+            registry.add_callback(AfterModelCallEvent, self._after_model_call)
+        except Exception:
+            logger.warning("hook_registration_unavailable")
+
+    def _after_model_call(self, event) -> None:
+        if self.role == "underwriter":
+            return
+
+        # Common event/message shapes seen across SDK versions.
+        if hasattr(event, "message") and isinstance(getattr(event, "message"), str):
+            event.message = sanitize_non_underwriter_output(event.message)
+            return
+
+        if hasattr(event, "response"):
+            response = getattr(event, "response")
+            if isinstance(response, str):
+                event.response = sanitize_non_underwriter_output(response)
+                return
+            if hasattr(response, "content") and isinstance(response.content, str):
+                response.content = sanitize_non_underwriter_output(response.content)
+                return
+
+
 @tool
 def search_manuals(query: str) -> str:
     """Search the Coaction underwriting manuals (General Liability and Property) using the AWS Knowledge Base.
@@ -133,14 +190,38 @@ class BedrockKBAgent:
 
     def __init__(self, session_manager: SessionManager):
         self.session_manager = session_manager
-        self.agents: dict[str, Agent] = {}
+        self.agents: dict[tuple[str, str], Agent] = {}
         self.settings = get_settings()
         if not self.settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is required")
         logger.info("bedrock_kb_agent_initialized", kb_id=self.settings.bedrock_kb_id)
 
-    def _get_or_create_agent(self, session_id: str) -> Agent:
-        if session_id not in self.agents:
+    def _build_agent(self, model: OpenAIModel, role_key: str) -> Agent:
+        role_policy = NON_UNDERWRITER_POLICY if role_key != "underwriter" else ""
+        prompt = f"{SYSTEM_PROMPT}\n\n{role_policy}".strip()
+
+        # Build with hook provider when supported by installed Strands SDK.
+        hook_provider: Optional[RoleBasedOutputHook] = None
+        try:
+            hook_provider = RoleBasedOutputHook(role_key)
+            return Agent(
+                model=model,
+                system_prompt=prompt,
+                tools=[search_manuals],
+                hooks=[hook_provider],
+            )
+        except TypeError:
+            logger.warning("agent_hooks_not_supported_fallback")
+            return Agent(
+                model=model,
+                system_prompt=prompt,
+                tools=[search_manuals],
+            )
+
+    def _get_or_create_agent(self, session_id: str, role: str) -> Agent:
+        role_key = (role or "").strip().lower()
+        cache_key = (session_id, role_key)
+        if cache_key not in self.agents:
             # Initialize OpenAI model
             model = OpenAIModel(
                 client_args={
@@ -153,19 +234,15 @@ class BedrockKBAgent:
                 }
             )
             
-            # Create agent with the managed search tool
-            self.agents[session_id] = Agent(
-                model=model,
-                system_prompt=SYSTEM_PROMPT,
-                tools=[search_manuals],
-            )
+            self.agents[cache_key] = self._build_agent(model, role_key)
         
-        return self.agents[session_id]
+        return self.agents[cache_key]
 
     async def query(
         self,
         session_id: str,
         query: str,
+        role: str,
         top_k: int = 5
     ) -> AsyncGenerator[tuple[str, list[str], list[str]], None]:
         """Stream a query within a conversation session."""
@@ -175,7 +252,8 @@ class BedrockKBAgent:
             # Initial state
             yield "🔍 Searching Coaction manuals...", [], []
             
-            agent = self._get_or_create_agent(session_id)
+            role_key = (role or "").strip().lower()
+            agent = self._get_or_create_agent(session_id, role_key)
             
             # Simulate a small delay for retrieval start to ensure UI updates
             await asyncio.sleep(0.1)
@@ -208,6 +286,10 @@ class BedrockKBAgent:
             found_urls = re.findall(r"(https?://[^\s\)\n<>]+)", answer)
             seen = set()
             sources = [x.strip(".,;:?!") for x in found_urls if not (x in seen or seen.add(x))]
+
+            if role_key != "underwriter":
+                answer = sanitize_non_underwriter_output(answer)
+                sources = []
 
             # Final yield
             yield answer, sources, follow_up_questions

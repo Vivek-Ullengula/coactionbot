@@ -36,6 +36,8 @@ class Settings(BaseSettings):
 
     # App
     log_level: str = "INFO"
+    jwt_secret_key: str | None = None
+    jwt_access_token_exp_minutes: int = 60
 
 
 @lru_cache

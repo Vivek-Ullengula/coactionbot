@@ -3,9 +3,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router, set_dependencies
 from app.api.sessions import router as session_router, set_session_manager
+from app.api.auth import router as auth_router
 from app.logger import setup_logging, get_logger
 from app.session_manager import SessionManager
 from app.config import get_settings
+from app.auth import init_auth_table
 
 logger = get_logger(__name__)
 
@@ -17,6 +19,7 @@ async def lifespan(app: FastAPI):
 
     settings = get_settings()
     session_manager = SessionManager()
+    init_auth_table()
     
     # Initialize Bedrock KB agent
     logger.info("initializing_bedrock_kb_agent", kb_id=settings.bedrock_kb_id)
@@ -50,6 +53,7 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api/v1", tags=["RAG"])
 app.include_router(session_router, prefix="/api/v1/session", tags=["Sessions"])
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
 
 
 @app.get("/health")

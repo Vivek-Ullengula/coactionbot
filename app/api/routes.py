@@ -1,9 +1,11 @@
 import uuid
 import json
 from fastapi import APIRouter, HTTPException
+from fastapi import Depends
 from fastapi.responses import StreamingResponse
 from app.models import QueryRequest, QueryResponse
 from app.logger import get_logger
+from app.auth import get_current_user
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -19,7 +21,7 @@ def set_dependencies(session_manager, conversational_agent):
 
 
 @router.post("/query")
-async def query_knowledge_base(request: QueryRequest):
+async def query_knowledge_base(request: QueryRequest, user=Depends(get_current_user)):
     """
     Unified query endpoint. Returns a stream of events including:
     - {'type': 'status', 'message': '...'}
@@ -35,13 +37,13 @@ async def query_knowledge_base(request: QueryRequest):
             async for answer, sources, follow_ups in _conversational_agent.query(
                 session_id=session_id,
                 query=request.query,
+                role=user.role,
                 top_k=request.top_k
             ):
                 # If follow_ups is empty, it's a status update
                 if not follow_ups and answer.startswith("🔍") or answer.startswith("📝"):
                     yield f"data: {json.dumps({'type': 'status', 'message': answer})}\n\n"
                 else:
-                    # Final result
                     payload = {
                         'type': 'final',
                         'answer': answer,

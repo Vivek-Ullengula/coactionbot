@@ -9,11 +9,80 @@ import os
 import uuid
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
+ALLOWED_ROLES = ("agent", "underwriter", "external")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def new_session_id() -> str:
     return str(uuid.uuid4())
+
+
+def signup_user(name: str, email: str, password: str, role: str):
+    try:
+        r = requests.post(
+            f"{API_BASE}/auth/signup",
+            json={
+                "name": (name or "").strip(),
+                "email": (email or "").strip(),
+                "password": password or "",
+                "role": (role or "").strip().lower(),
+            },
+            timeout=10,
+        )
+        if r.status_code >= 400:
+            detail = r.json().get("detail", r.text)
+            return f"Signup failed: {detail}"
+        return "Signup successful. Please login."
+    except Exception as exc:
+        return f"Signup failed: {exc}"
+
+
+def login_user(email: str, password: str):
+    try:
+        r = requests.post(
+            f"{API_BASE}/auth/login",
+            json={"email": (email or "").strip(), "password": password or ""},
+            timeout=10,
+        )
+        if r.status_code >= 400:
+            detail = r.json().get("detail", r.text)
+            return (
+                {"authenticated": False, "name": "", "email": "", "role": "", "token": ""},
+                f"Login failed: {detail}",
+                gr.update(visible=False),
+                gr.update(visible=True),
+                "",
+            )
+        payload = r.json()
+        user = payload.get("user", {})
+        token = payload.get("access_token", "")
+        session_user = {
+            "authenticated": True,
+            "name": user.get("name", ""),
+            "email": user.get("email", ""),
+            "role": user.get("role", ""),
+            "token": token,
+        }
+        welcome = f"Logged in as {session_user['name']} ({session_user['role']})."
+        return session_user, welcome, gr.update(visible=True), gr.update(visible=False), welcome
+    except Exception as exc:
+        return (
+            {"authenticated": False, "name": "", "email": "", "role": "", "token": ""},
+            f"Login failed: {exc}",
+            gr.update(visible=False),
+            gr.update(visible=True),
+            "",
+        )
+
+
+def logout_user():
+    return (
+        {"authenticated": False, "name": "", "email": "", "role": "", "token": ""},
+        "Logged out.",
+        gr.update(visible=False),
+        gr.update(visible=True),
+        "",
+    )
 
 def api_health() -> str:
     try:
@@ -68,11 +137,17 @@ SUGGESTIONS = [
 
 # ─── Core chat logic ─────────────────────────────────────────────────────────
 
-def respond(message, history, session_id, top_k):
+def respond(message, history, session_id, top_k, user_state):
     """
     Generator that yields (history, session_id, fu1, fu2, fu3, sug_visible)
     on every state change so the UI stays responsive.
     """
+    if not user_state or not user_state.get("authenticated"):
+        history = list(history or [])
+        history.append({"role": "assistant", "content": "⚠️ Please login to use the bot."})
+        yield history, session_id, gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        return
+
     if not message or not message.strip():
         yield history, session_id, gr.skip(), gr.skip(), gr.skip(), gr.skip()
         return
@@ -94,6 +169,7 @@ def respond(message, history, session_id, top_k):
         with requests.post(
             f"{API_BASE}/query",
             json={"query": message, "session_id": session_id, "top_k": top_k},
+            headers={"Authorization": f"Bearer {user_state.get('token', '')}"},
             stream=True, timeout=120,
         ) as resp:
             resp.raise_for_status()
@@ -112,7 +188,22 @@ def respond(message, history, session_id, top_k):
                            gr.update(visible=False), gr.update(visible=False))
 
                 elif data.get("type") == "final":
-                    history[-1]["content"] = data["answer"]
+                    answer = data.get("answer", "")
+                    sources = data.get("sources", [])
+                    if sources:
+                        unique_sources = []
+                        seen = set()
+                        for src in sources:
+                            if src and src not in seen:
+                                seen.add(src)
+                                unique_sources.append(src)
+
+                        has_sources_section = ("**Sources**" in answer) or ("Sources:" in answer)
+                        if not has_sources_section:
+                            missing_sources = [src for src in unique_sources if src not in answer]
+                            if missing_sources:
+                                answer = f"{answer}\n\n**Sources**\n" + "\n".join(f"- {src}" for src in missing_sources)
+                    history[-1]["content"] = answer
                     fups = data.get("follow_up_questions", [])
                     fu_updates = []
                     for i in range(3):
@@ -136,8 +227,8 @@ def respond(message, history, session_id, top_k):
                gr.update(visible=False), gr.update(visible=False))
 
 
-def on_followup(text, history, session_id, top_k):
-    yield from respond(text, history, session_id, top_k)
+def on_followup(text, history, session_id, top_k, user_state):
+    yield from respond(text, history, session_id, top_k, user_state)
 
 
 def on_clear():
@@ -156,6 +247,7 @@ def build():
     with gr.Blocks(title="Coaction Underwriting Assistant") as app:
 
         session_state = gr.State("")
+        user_state = gr.State({"authenticated": False, "name": "", "email": "", "role": "", "token": ""})
 
         # ── Settings sidebar ──
         with gr.Sidebar(label="⚙ Settings", open=False):
@@ -163,8 +255,25 @@ def build():
             gr.HTML(f'<p style="font-size:0.72rem;color:#64748b;margin-top:8px;">'
                     f'API: {api_health()}</p>')
 
+        with gr.Column(visible=True) as auth_col:
+            gr.Markdown("### Login Required")
+            with gr.Tab("Signup"):
+                su_name = gr.Textbox(label="Name")
+                su_email = gr.Textbox(label="Email")
+                su_password = gr.Textbox(label="Password", type="password")
+                su_role = gr.Dropdown(list(ALLOWED_ROLES), value="agent", label="Role")
+                su_btn = gr.Button("Create account", variant="primary")
+                su_status = gr.Markdown("")
+
+            with gr.Tab("Login"):
+                li_email = gr.Textbox(label="Email")
+                li_password = gr.Textbox(label="Password", type="password")
+                li_btn = gr.Button("Login", variant="primary")
+                li_status = gr.Markdown("")
+
         # ── Main column (locked height) ──
-        with gr.Column(elem_id="chat-col"):
+        with gr.Column(elem_id="chat-col", visible=False) as chat_col:
+            user_badge = gr.Markdown("")
 
             chatbot = gr.Chatbot(
                 elem_id="chatbot",
@@ -207,10 +316,11 @@ def build():
                 )
                 send = gr.Button("Send", variant="primary", scale=1, min_width=80)
                 clear = gr.Button("Clear", scale=1, min_width=60)
+                logout = gr.Button("Logout", scale=1, min_width=70)
 
         # ── Wiring ──
         outs  = [chatbot, session_state, fu1, fu2, fu3, sug_row]
-        ins   = [msg, chatbot, session_state, top_k]
+        ins   = [msg, chatbot, session_state, top_k, user_state]
 
         # Send / Enter
         send.click(respond, ins, outs).then(lambda: "", None, [msg])
@@ -218,7 +328,7 @@ def build():
 
         # Follow-ups
         for btn in (fu1, fu2, fu3):
-            btn.click(on_followup, [btn, chatbot, session_state, top_k], outs)
+            btn.click(on_followup, [btn, chatbot, session_state, top_k, user_state], outs)
 
         # Suggestion chips
         for sb in sug_btns:
@@ -232,6 +342,18 @@ def build():
 
         # Clear
         clear.click(on_clear, None, outs)
+
+        su_btn.click(signup_user, [su_name, su_email, su_password, su_role], [su_status])
+        li_btn.click(
+            login_user,
+            [li_email, li_password],
+            [user_state, li_status, chat_col, auth_col, user_badge],
+        )
+        logout.click(
+            logout_user,
+            None,
+            [user_state, li_status, chat_col, auth_col, user_badge],
+        )
 
     return app
 
