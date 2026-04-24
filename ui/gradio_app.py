@@ -82,6 +82,13 @@ def logout_user():
         gr.update(visible=False),
         gr.update(visible=True),
         "",
+        [],                          # chatbot
+        "",                          # session_state
+        gr.update(visible=False),    # fu1
+        gr.update(visible=False),    # fu2
+        gr.update(visible=False),    # fu3
+        gr.update(visible=True),     # suggestions
+        "",                          # msg
     )
 
 def api_health() -> str:
@@ -139,17 +146,17 @@ SUGGESTIONS = [
 
 def respond(message, history, session_id, top_k, user_state):
     """
-    Generator that yields (history, session_id, fu1, fu2, fu3, sug_visible)
+    Generator that yields (history, session_id, fu1, fu2, fu3, sug_visible, msg)
     on every state change so the UI stays responsive.
     """
     if not user_state or not user_state.get("authenticated"):
         history = list(history or [])
         history.append({"role": "assistant", "content": "⚠️ Please login to use the bot."})
-        yield history, session_id, gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        yield history, session_id, gr.skip(), gr.skip(), gr.skip(), gr.skip(), ""
         return
 
     if not message or not message.strip():
-        yield history, session_id, gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        yield history, session_id, gr.skip(), gr.skip(), gr.skip(), gr.skip(), ""
         return
 
     if not session_id:
@@ -162,7 +169,7 @@ def respond(message, history, session_id, top_k, user_state):
     history.append({"role": "assistant", "content": "⏳ Thinking…"})
     yield (history, session_id,
            gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-           gr.update(visible=False))
+           gr.update(visible=False), "")
 
     # 2. Stream from backend
     try:
@@ -185,7 +192,7 @@ def respond(message, history, session_id, top_k, user_state):
                     history[-1]["content"] = data["message"]
                     yield (history, session_id,
                            gr.update(visible=False), gr.update(visible=False),
-                           gr.update(visible=False), gr.update(visible=False))
+                           gr.update(visible=False), gr.update(visible=False), "")
 
                 elif data.get("type") == "final":
                     answer = data.get("answer", "")
@@ -212,19 +219,19 @@ def respond(message, history, session_id, top_k, user_state):
                         else:
                             fu_updates.append(gr.update(visible=False))
                     yield (history, session_id, *fu_updates,
-                           gr.update(visible=False))
+                           gr.update(visible=False), "")
 
                 elif data.get("type") == "error":
                     history[-1]["content"] = f"⚠️ {data['message']}"
                     yield (history, session_id,
                            gr.update(visible=False), gr.update(visible=False),
-                           gr.update(visible=False), gr.update(visible=False))
+                           gr.update(visible=False), gr.update(visible=False), "")
 
     except Exception as exc:
         history[-1]["content"] = f"⚠️ {exc}"
         yield (history, session_id,
                gr.update(visible=False), gr.update(visible=False),
-               gr.update(visible=False), gr.update(visible=False))
+               gr.update(visible=False), gr.update(visible=False), "")
 
 
 def on_followup(text, history, session_id, top_k, user_state):
@@ -239,6 +246,7 @@ def on_clear():
         gr.update(visible=False),    # fu2
         gr.update(visible=False),    # fu3
         gr.update(visible=True),     # suggestions
+        "",                          # msg
     )
 
 # ─── Build App ───────────────────────────────────────────────────────────────
@@ -319,12 +327,12 @@ def build():
                 logout = gr.Button("Logout", scale=1, min_width=70)
 
         # ── Wiring ──
-        outs  = [chatbot, session_state, fu1, fu2, fu3, sug_row]
+        outs  = [chatbot, session_state, fu1, fu2, fu3, sug_row, msg]
         ins   = [msg, chatbot, session_state, top_k, user_state]
 
         # Send / Enter
-        send.click(respond, ins, outs).then(lambda: "", None, [msg])
-        msg.submit(respond, ins, outs).then(lambda: "", None, [msg])
+        send.click(respond, ins, outs)
+        msg.submit(respond, ins, outs)
 
         # Follow-ups
         for btn in (fu1, fu2, fu3):
@@ -336,8 +344,6 @@ def build():
                 lambda t=sb.value: t, None, [msg]
             ).then(
                 respond, ins, outs
-            ).then(
-                lambda: "", None, [msg]
             )
 
         # Clear
@@ -352,7 +358,7 @@ def build():
         logout.click(
             logout_user,
             None,
-            [user_state, li_status, chat_col, auth_col, user_badge],
+            [user_state, li_status, chat_col, auth_col, user_badge, chatbot, session_state, fu1, fu2, fu3, sug_row, msg],
         )
 
     return app
