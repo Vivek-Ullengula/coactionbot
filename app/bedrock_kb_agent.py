@@ -116,22 +116,24 @@ class RoleBasedOutputHook:
             logger.warning("hook_registration_unavailable")
 
     def _after_model_call(self, event) -> None:
-        if self.role == "underwriter":
-            return
-
-        # Common event/message shapes seen across SDK versions.
-        if hasattr(event, "message") and isinstance(getattr(event, "message"), str):
-            event.message = sanitize_non_underwriter_output(event.message)
-            return
-
-        if hasattr(event, "response"):
-            response = getattr(event, "response")
-            if isinstance(response, str):
-                event.response = sanitize_non_underwriter_output(response)
-                return
-            if hasattr(response, "content") and isinstance(response.content, str):
-                response.content = sanitize_non_underwriter_output(response.content)
-                return
+        # URL/source blocking is temporarily disabled.
+        # if self.role == "underwriter":
+        #     return
+        #
+        # # Common event/message shapes seen across SDK versions.
+        # if hasattr(event, "message") and isinstance(getattr(event, "message"), str):
+        #     event.message = sanitize_non_underwriter_output(event.message)
+        #     return
+        #
+        # if hasattr(event, "response"):
+        #     response = getattr(event, "response")
+        #     if isinstance(response, str):
+        #         event.response = sanitize_non_underwriter_output(response)
+        #         return
+        #     if hasattr(response, "content") and isinstance(response.content, str):
+        #         response.content = sanitize_non_underwriter_output(response.content)
+        #         return
+        return
 
 
 @tool
@@ -197,7 +199,9 @@ class BedrockKBAgent:
         logger.info("bedrock_kb_agent_initialized", kb_id=self.settings.bedrock_kb_id)
 
     def _build_agent(self, model: OpenAIModel, role_key: str) -> Agent:
-        role_policy = NON_UNDERWRITER_POLICY if role_key != "underwriter" else ""
+        # URL/source blocking policy temporarily disabled for all roles.
+        # role_policy = NON_UNDERWRITER_POLICY if role_key != "underwriter" else ""
+        role_policy = ""
         prompt = f"{SYSTEM_PROMPT}\n\n{role_policy}".strip()
 
         # Build with hook provider when supported by installed Strands SDK.
@@ -287,9 +291,10 @@ class BedrockKBAgent:
             seen = set()
             sources = [x.strip(".,;:?!") for x in found_urls if not (x in seen or seen.add(x))]
 
-            if role_key != "underwriter":
-                answer = sanitize_non_underwriter_output(answer)
-                sources = []
+            # URL/source blocking temporarily disabled.
+            # if role_key != "underwriter":
+            #     answer = sanitize_non_underwriter_output(answer)
+            #     sources = []
 
             # Final yield
             yield answer, sources, follow_up_questions
