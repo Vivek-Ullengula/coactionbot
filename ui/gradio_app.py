@@ -64,8 +64,8 @@ def login_user(email: str, password: str):
             "role": user.get("role", ""),
             "token": token,
         }
-        welcome = f"Logged in as {session_user['name']} ({session_user['role']})."
-
+        role_title = str(session_user.get('role', '')).title()
+        welcome = f"Welcome to the {role_title} Portal, {session_user['name']}."
         return (
             session_user, 
             welcome, 
