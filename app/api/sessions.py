@@ -5,10 +5,10 @@ This module provides REST API endpoints for managing conversation sessions,
 enabling multi-turn conversations with the RAG agent.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
-from app.logger import get_logger
+from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -107,7 +107,6 @@ async def create_session(request: CreateSessionRequest):
             detail=f"Failed to create session: {str(e)}"
         )
 
-
 @router.get("/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str):
     """
@@ -165,15 +164,15 @@ async def get_session(session_id: str):
         logger.info(
             "session_retrieved",
             session_id=session_id,
-            message_count=len(session.messages)
+            message_count=len(session.get("messages", []))
         )
         
         return SessionResponse(
-            session_id=session.session_id,
-            created_at=session.created_at.isoformat(),
-            last_accessed=session.last_accessed.isoformat(),
-            messages=session.messages,
-            metadata=session.metadata
+            session_id=session["session_id"],
+            created_at=session["created_at"].isoformat() if hasattr(session["created_at"], "isoformat") else str(session["created_at"]),
+            last_accessed=session["last_accessed"].isoformat() if hasattr(session["last_accessed"], "isoformat") else str(session["last_accessed"]),
+            messages=session.get("messages", []),
+            metadata=session.get("metadata", {})
         )
     except HTTPException:
         raise

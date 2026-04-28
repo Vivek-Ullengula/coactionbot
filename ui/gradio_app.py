@@ -37,6 +37,7 @@ def signup_user(name: str, email: str, password: str, role: str):
         return f"Signup failed: {exc}"
 
 
+
 def login_user(email: str, password: str):
     try:
         r = requests.post(
@@ -51,7 +52,7 @@ def login_user(email: str, password: str):
                 f"Login failed: {detail}",
                 gr.update(visible=False),
                 gr.update(visible=True),
-                "",
+                ""
             )
         payload = r.json()
         user = payload.get("user", {})
@@ -64,14 +65,21 @@ def login_user(email: str, password: str):
             "token": token,
         }
         welcome = f"Logged in as {session_user['name']} ({session_user['role']})."
-        return session_user, welcome, gr.update(visible=True), gr.update(visible=False), welcome
+
+        return (
+            session_user, 
+            welcome, 
+            gr.update(visible=True), 
+            gr.update(visible=False), 
+            welcome
+        )
     except Exception as exc:
         return (
             {"authenticated": False, "name": "", "email": "", "role": "", "token": ""},
             f"Login failed: {exc}",
             gr.update(visible=False),
             gr.update(visible=True),
-            "",
+            ""
         )
 
 
@@ -88,8 +96,10 @@ def logout_user():
         gr.update(visible=False),    # fu2
         gr.update(visible=False),    # fu3
         gr.update(visible=True),     # suggestions
-        "",                          # msg
+        ""                           # msg
     )
+
+
 
 def api_health() -> str:
     try:
@@ -147,7 +157,6 @@ SUGGESTIONS = [
 def respond(message, history, session_id, top_k, user_state):
     """
     Generator that yields (history, session_id, fu1, fu2, fu3, sug_visible, msg)
-    on every state change so the UI stays responsive.
     """
     if not user_state or not user_state.get("authenticated"):
         history = list(history or [])
@@ -164,18 +173,16 @@ def respond(message, history, session_id, top_k, user_state):
 
     history = list(history or [])
 
-    # 1. Show user bubble immediately
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": "⏳ Thinking…"})
     yield (history, session_id,
            gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
            gr.update(visible=False), "")
 
-    # 2. Stream from backend
     try:
         with requests.post(
             f"{API_BASE}/query",
-            json={"query": message, "session_id": session_id, "top_k": top_k},
+            json={"query": message, "session_id": session_id or "", "top_k": top_k},
             headers={"Authorization": f"Bearer {user_state.get('token', '')}"},
             stream=True, timeout=120,
         ) as resp:
@@ -195,6 +202,9 @@ def respond(message, history, session_id, top_k, user_state):
                            gr.update(visible=False), gr.update(visible=False), "")
 
                 elif data.get("type") == "final":
+                    if "session_id" in data and not session_id:
+                        session_id = data["session_id"]
+                        
                     answer = data.get("answer", "")
                     sources = data.get("sources", [])
                     if sources:
@@ -218,6 +228,7 @@ def respond(message, history, session_id, top_k, user_state):
                             fu_updates.append(gr.update(value=fups[i], visible=True))
                         else:
                             fu_updates.append(gr.update(visible=False))
+                    
                     yield (history, session_id, *fu_updates,
                            gr.update(visible=False), "")
 
@@ -246,7 +257,7 @@ def on_clear():
         gr.update(visible=False),    # fu2
         gr.update(visible=False),    # fu3
         gr.update(visible=True),     # suggestions
-        "",                          # msg
+        ""                           # msg
     )
 
 # ─── Build App ───────────────────────────────────────────────────────────────
@@ -323,7 +334,6 @@ def build():
                     max_lines=3,
                 )
                 send = gr.Button("Send", variant="primary", scale=1, min_width=80)
-                clear = gr.Button("Clear", scale=1, min_width=60)
                 logout = gr.Button("Logout", scale=1, min_width=70)
 
         # ── Wiring ──
@@ -346,10 +356,8 @@ def build():
                 respond, ins, outs
             )
 
-        # Clear
-        clear.click(on_clear, None, outs)
-
         su_btn.click(signup_user, [su_name, su_email, su_password, su_role], [su_status])
+        
         li_btn.click(
             login_user,
             [li_email, li_password],

@@ -214,7 +214,7 @@ docker run -p 7860:7860 -e API_BASE_URL=http://host.docker.internal:8000/api/v1 
 If setting up Aurora for the first time, run the index creation script:
 
 ```bash
-python -c "from app.add_index import *"
+python -c "from app.utils.add_index import *"
 ```
 
 This creates the required GIN (full-text) and HNSW (vector similarity) indexes.

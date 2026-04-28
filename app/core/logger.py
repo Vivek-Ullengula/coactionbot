@@ -1,6 +1,6 @@
 import logging
 import structlog
-from app.config import get_settings
+from app.core.config import get_settings
 
 
 def setup_logging() -> None:

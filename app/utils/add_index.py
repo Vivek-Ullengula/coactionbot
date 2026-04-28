@@ -1,5 +1,5 @@
 import psycopg2
-from app.config import get_settings
+from app.core.config import get_settings
 
 def add_index():
     s = get_settings()

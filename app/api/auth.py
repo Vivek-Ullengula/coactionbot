@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth import (
+from app.core.auth import (
     ALLOWED_ROLES,
     authenticate_user,
     create_access_token,

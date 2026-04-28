@@ -5,8 +5,8 @@ Usage: python query.py "your question here"
 """
 import asyncio
 import sys
-from app.bedrock_kb_agent import BedrockKBAgent
-from app.session_manager import SessionManager
+from app.services.bedrock_kb_agent import BedrockKBAgent
+from app.services.session_manager import SessionManager
 
 
 async def main():

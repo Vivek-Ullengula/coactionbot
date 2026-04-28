@@ -5,7 +5,7 @@ Usage: python scrape.py https://your-site.com
 """
 import asyncio
 import sys
-from app.bedrock_kb_indexer import index_url_to_bedrock_kb
+from app.utils.add_index import index_url_to_bedrock_kb
 
 
 async def main():

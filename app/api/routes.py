@@ -3,9 +3,9 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi import Depends
 from fastapi.responses import StreamingResponse
-from app.models import QueryRequest, QueryResponse
-from app.logger import get_logger
-from app.auth import get_current_user
+from app.schemas.schema import QueryRequest, QueryResponse
+from app.core.logger import get_logger
+from app.core.auth import get_current_user
 
 logger = get_logger(__name__)
 router = APIRouter()

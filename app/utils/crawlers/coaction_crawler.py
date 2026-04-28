@@ -4,45 +4,19 @@ import re
 import os
 from urllib.parse import urlparse
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
-from app.logger import get_logger
+from app.core.logger import get_logger
+from app.utils.crawlers.base_crawler import BaseCrawler
 
 logger = get_logger(__name__)
 
-class CoactionCrawler:
+class CoactionCrawler(BaseCrawler):
     """
     Specialized crawler for Coaction manual content using Crawl4AI.
     Implements domain-specific chunking for Class Codes and Guide pages.
     """
 
     def __init__(self, start_url: str):
-        self.start_url = start_url
-        self.base_domain = urlparse(start_url).netloc
-        self.base_path = "/manuals/"
-        self.visited = set()
-        self.page_contents = {}
-
-    def is_valid_url(self, url: str) -> bool:
-        parsed = urlparse(url)
-        clean = parsed._replace(fragment="").geturl()
-        return (
-            parsed.netloc == self.base_domain and
-            parsed.path.startswith(self.base_path) and
-            clean not in self.visited
-        )
-
-    def normalize_url(self, url: str) -> str:
-        parsed = urlparse(url)
-        return parsed._replace(fragment="").geturl()
-
-    def extract_links(self, markdown: str, base_url: str) -> list[str]:
-        pattern = r'\[.*?\]\((http[s]?://[^\)]+)\)'
-        links = re.findall(pattern, markdown)
-        valid = []
-        for l in links:
-            norm = self.normalize_url(l)
-            if self.is_valid_url(norm):
-                valid.append(norm)
-        return valid
+        super().__init__(start_url)
 
     def clean_text(self, text: str) -> str:
         text = re.sub(r'!\[.*?\]\(.*?\)', '', text, flags=re.DOTALL)
@@ -56,10 +30,6 @@ class CoactionCrawler:
 
     def is_class_code_page(self, url: str) -> bool:
         return bool(re.search(r'/manuals/\d+\.html$', url))
-
-    def extract_class_code(self, url: str) -> str:
-        m = re.search(r'/manuals/(\d+)\.html', url)
-        return m.group(1) if m else None
 
     def extract_class_name(self, text: str, code: str) -> str:
         m = re.search(rf'{code}\s*[–\-]\s*([^\n*\[]+)', text)
@@ -182,7 +152,7 @@ class CoactionCrawler:
         cleaned = self.clean_text(result.markdown)
         self.page_contents[norm_url] = cleaned
 
-        links = self.extract_links(result.markdown, norm_url)
+        links = self.extract_links(result.markdown)
         tasks = [self._crawl_recursive(link, crawler) for link in links]
         await asyncio.gather(*tasks)
 
