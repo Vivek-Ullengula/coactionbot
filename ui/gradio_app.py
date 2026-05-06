@@ -80,12 +80,26 @@ def login_user(email: str, password: str):
             welcome = f"Welcome to the Agent Portal, {user_name}."
         else:
             welcome = f"Welcome, {user_name}."
+        # Fetch user's session history directly
+        dropdown_choices = []
+        try:
+            sessions_resp = requests.get(
+                f"{API_BASE}/sessions",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            if sessions_resp.ok:
+                sessions = sessions_resp.json()
+                dropdown_choices = [(s["title"], s["session_id"]) for s in sessions]
+        except Exception as e:
+            print(f"Failed to fetch sessions: {e}")
+
         return (
             session_user, 
             welcome, 
             gr.update(visible=True), 
             gr.update(visible=False), 
-            welcome
+            welcome,
+            gr.update(choices=dropdown_choices)
         )
     except Exception as exc:
         return (
@@ -93,7 +107,8 @@ def login_user(email: str, password: str):
             f"Login failed: {exc}",
             gr.update(visible=False),
             gr.update(visible=True),
-            ""
+            "",
+            gr.update(choices=[])
         )
 
 
@@ -110,8 +125,42 @@ def logout_user():
         gr.update(value="", visible=False),    # fu2
         gr.update(value="", visible=False),    # fu3
         gr.update(visible=True),     # suggestions
-        ""                           # msg
+        "",                          # msg
+        gr.update(choices=[])        # history_dropdown
     )
+
+
+
+def refresh_dropdown(user_state):
+    choices = []
+    if user_state and user_state.get("token"):
+        try:
+            resp = requests.get(
+                f"{API_BASE}/sessions",
+                headers={"Authorization": f"Bearer {user_state.get('token')}"}
+            )
+            if resp.ok:
+                sessions = resp.json()
+                choices = [(s["title"], s["session_id"]) for s in sessions]
+        except Exception as e:
+            pass
+    return gr.update(choices=choices)
+
+def load_session(session_id, user_state):
+    hide_btn = gr.update(visible=False)
+    if not session_id or not user_state:
+        return [], session_id, hide_btn, hide_btn, hide_btn, hide_btn
+    try:
+        resp = requests.get(
+            f"{API_BASE}/sessions/{session_id}",
+            headers={"Authorization": f"Bearer {user_state.get('token')}"}
+        )
+        resp.raise_for_status()
+        messages = resp.json().get("messages", [])
+        return messages, session_id, hide_btn, hide_btn, hide_btn, hide_btn
+    except Exception as e:
+        print(f"Failed to load session: {e}")
+        return [], session_id, hide_btn, hide_btn, hide_btn, hide_btn
 
 
 
@@ -124,34 +173,155 @@ def api_health() -> str:
 
 # ─── Theme ───────────────────────────────────────────────────────────────────
 
-THEME = gr.themes.Monochrome(
-    font=gr.themes.GoogleFont("Inter"),
-    radius_size=gr.themes.sizes.radius_sm,
+THEME = gr.themes.Soft(
+    font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"],
+    primary_hue="blue",
+    neutral_hue="slate",
+    radius_size=gr.themes.sizes.radius_md,
+).set(
+    body_background_fill="*neutral_50",
+    block_background_fill="white",
+    block_border_width="0px",
+    block_label_background_fill="*primary_100",
+    button_primary_background_fill="linear-gradient(135deg, *primary_600, *primary_500)",
+    button_primary_background_fill_hover="linear-gradient(135deg, *primary_500, *primary_400)",
+    button_primary_text_color="white",
+    button_secondary_background_fill="white",
+    button_secondary_border_color="*neutral_200",
+    button_secondary_text_color="*neutral_700",
+    border_color_primary="*neutral_200",
+    color_accent_soft="*primary_50",
+    panel_background_fill="white",
 )
 
 # ─── CSS ─────────────────────────────────────────────────────────────────────
 
 CSS = """
-/* Lock the chat column so nothing shrinks */
-#chat-col { min-height: 820px; }
+/* Ultra-Premium Glassmorphism UI */
+body, .gradio-container {
+    background: linear-gradient(135deg, #f6f8fd, #f1f5f9) !important;
+}
 
-/* Chatbot fixed height */
-#chatbot { height: 680px !important; }
+/* Sidebar Styling */
+.sidebar {
+    background: rgba(255, 255, 255, 0.7) !important;
+    backdrop-filter: blur(12px) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.5) !important;
+}
+
+/* Chatbot container */
+#chatbot { 
+    height: 680px !important; 
+    border: 1px solid rgba(255, 255, 255, 0.6) !important;
+    background: rgba(255, 255, 255, 0.4) !important;
+    backdrop-filter: blur(16px) !important;
+    border-radius: 24px !important;
+    box-shadow: 0 10px 40px -10px rgba(0,0,0,0.05) !important;
+    padding: 15px !important;
+}
+
+/* Message Bubbles (Handles both Gradio versions) */
+.message-row.user .message, #chatbot .message.user {
+    background: linear-gradient(135deg, #4f46e5, #3b82f6) !important;
+    color: white !important;
+    border-radius: 20px 20px 4px 20px !important;
+    padding: 14px 20px !important;
+    box-shadow: 0 8px 16px -4px rgba(59, 130, 246, 0.3) !important;
+    border: none !important;
+}
+.message-row.user .message *, #chatbot .message.user * { color: white !important; }
+
+.message-row.bot .message, #chatbot .message.bot {
+    background: #ffffff !important;
+    color: #1e293b !important;
+    border-radius: 20px 20px 20px 4px !important;
+    padding: 14px 20px !important;
+    box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.05) !important;
+    border: 1px solid #f1f5f9 !important;
+}
 
 /* Smaller text in messages */
-#chatbot .message-wrap { font-size: 0.88rem !important; line-height: 1.55 !important; }
+.message-wrap { 
+    font-size: 0.95rem !important; 
+    line-height: 1.65 !important; 
+    letter-spacing: -0.01em !important;
+}
 
-/* Follow-up row */
-.fu-row button { font-size: 0.8rem !important; text-align: left !important; }
+/* Follow-up row buttons (Chips) */
+.fu-row {
+    margin-top: 10px !important;
+    gap: 8px !important;
+}
+.fu-row button { 
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    color: #334155 !important;
+    border-radius: 100px !important;
+    font-size: 0.82rem !important; 
+    padding: 8px 18px !important;
+    text-align: left !important; 
+    transition: all 0.2s ease !important;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+}
+.fu-row button:hover {
+    background: #f1f5f9 !important;
+    border-color: #cbd5e1 !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+}
 
 /* Suggestion row */
-.sug-row button { font-size: 0.78rem !important; }
+.sug-row {
+    justify-content: center;
+    gap: 12px !important;
+    margin-top: 20px !important;
+}
+.sug-row button { 
+    border-radius: 12px !important;
+    padding: 10px 16px !important;
+    background: white !important;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1) !important;
+    border: 1px solid #e2e8f0 !important;
+    color: #475569 !important;
+    font-size: 0.82rem !important; 
+    font-weight: 500 !important;
+    transition: all 0.2s ease !important;
+}
+.sug-row button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1) !important;
+    color: #2563eb !important;
+    border-color: #bfdbfe !important;
+}
 
-/* Input */
-#msg-box textarea { font-size: 0.88rem !important; }
+/* Input Bar Styling */
+#msg-box {
+    border-radius: 24px !important;
+    background: white !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+    border: 1px solid #e2e8f0 !important;
+    overflow: hidden !important;
+}
+#msg-box textarea { 
+    font-size: 0.95rem !important; 
+    padding: 14px 20px !important;
+    border: none !important;
+}
+#msg-box textarea:focus {
+    box-shadow: none !important;
+}
 
 /* Links in messages */
-#chatbot a { color: #334155 !important; font-weight: 600 !important; text-decoration: underline !important; }
+#chatbot a { 
+    color: #2563eb !important; 
+    font-weight: 600 !important; 
+    text-decoration: none !important; 
+    border-bottom: 1px solid transparent;
+    transition: all 0.2s ease;
+}
+#chatbot a:hover {
+    border-bottom: 1px solid #2563eb;
+}
 
 /* Hide footer */
 footer { display: none !important; }
@@ -268,11 +438,15 @@ def build():
         session_state = gr.State("")
         user_state = gr.State({"authenticated": False, "name": "", "email": "", "role": "", "token": ""})
 
-        # ── Settings sidebar ──
-        with gr.Sidebar(label="⚙ Settings", open=False):
-            top_k = gr.Slider(1, 20, value=5, step=1, label="Search depth")
-            gr.HTML(f'<p style="font-size:0.72rem;color:#64748b;margin-top:8px;">'
-                    f'API: {api_health()}</p>')
+        # ── Sidebar (History & Settings) ──
+        with gr.Sidebar(label="Coaction Assistant", open=True):
+            new_chat_btn = gr.Button("➕ New Chat", variant="primary")
+            history_dropdown = gr.Dropdown(label="Recent Chats", choices=[], interactive=True)
+            
+            with gr.Accordion("⚙ Settings", open=False):
+                top_k = gr.Slider(1, 20, value=5, step=1, label="Search depth")
+                gr.HTML(f'<p style="font-size:0.72rem;color:#64748b;margin-top:8px;">'
+                        f'API: {api_health()}</p>')
 
         with gr.Column(visible=True) as auth_col:
             gr.Markdown("### Login Required")
@@ -342,8 +516,12 @@ def build():
         ins   = [msg, chatbot, session_state, top_k, user_state]
 
         # Send / Enter
-        send.click(respond, ins, outs)
-        msg.submit(respond, ins, outs)
+        send.click(respond, ins, outs).then(
+            refresh_dropdown, [user_state], [history_dropdown]
+        )
+        msg.submit(respond, ins, outs).then(
+            refresh_dropdown, [user_state], [history_dropdown]
+        )
 
         # Follow-ups
         for btn in (fu1, fu2, fu3):
@@ -362,21 +540,47 @@ def build():
         li_btn.click(
             login_user,
             [li_email, li_password],
-            [user_state, li_status, chat_col, auth_col, user_badge],
+            [user_state, li_status, chat_col, auth_col, user_badge, history_dropdown],
         )
+        
         logout.click(
             logout_user,
             None,
-            [user_state, li_status, chat_col, auth_col, user_badge, chatbot, session_state, fu1, fu2, fu3, sug_row, msg],
+            [user_state, li_status, chat_col, auth_col, user_badge, chatbot, session_state, fu1, fu2, fu3, sug_row, msg, history_dropdown],
         )
 
-        def clear_chat():
-            return [], "", gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(visible=True), ""
+        def clear_chat(user_state):
+            choices = []
+            if user_state and user_state.get("token"):
+                try:
+                    resp = requests.get(
+                        f"{API_BASE}/sessions",
+                        headers={"Authorization": f"Bearer {user_state.get('token')}"}
+                    )
+                    if resp.ok:
+                        sessions = resp.json()
+                        choices = [(s["title"], s["session_id"]) for s in sessions]
+                except Exception as e:
+                    pass
+            return [], "", gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(visible=True), "", gr.update(value=None, choices=choices)
             
         clear.click(
             clear_chat,
-            None,
-            [chatbot, session_state, fu1, fu2, fu3, sug_row, msg]
+            [user_state],
+            [chatbot, session_state, fu1, fu2, fu3, sug_row, msg, history_dropdown]
+        )
+        
+        new_chat_btn.click(
+            clear_chat,
+            [user_state],
+            [chatbot, session_state, fu1, fu2, fu3, sug_row, msg, history_dropdown]
+        )
+        
+        # Load past session when dropdown changes
+        history_dropdown.change(
+            load_session,
+            [history_dropdown, user_state],
+            [chatbot, session_state, fu1, fu2, fu3, sug_row]
         )
 
     return app

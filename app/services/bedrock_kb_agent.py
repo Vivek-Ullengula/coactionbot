@@ -102,26 +102,35 @@ class BedrockKBAgent:
         session_id: str,
         query: str,
         role: str,
-        top_k: int = 5
+        top_k: int = 5,
+        user_email: Optional[str] = None
     ) -> AsyncGenerator[tuple[str, list[str], list[str]], None]:
         """Stream a query within a conversation session."""
         logger.info("processing_query_stream", session_id=session_id)
 
         try:
             # Initial state
-            yield "🔍 Searching Coaction manuals...", [], []
+            yield "Searching Coaction manuals...", [], []
             
             role_key = (role or "").strip().lower()
             agent = self._get_or_create_agent(session_id, role_key)
+            
+
+            
+            # Retrieve session history and restore it to the agent state
+            history = self.session_manager.get_messages(session_id)
+            if history:
+                logger.info("restoring_history", count=len(history))
+                agent.state.messages = history.copy()
             
             # Simulate a small delay for retrieval start to ensure UI updates
             await asyncio.sleep(0.1)
             
             # Add user message to memory
-            self.session_manager.add_message(session_id, "user", query)
+            self.session_manager.add_message(session_id, "user", query, user_email=user_email)
             
             # Second state
-            yield "📝 Analyzing manual content...", [], []
+            yield "Analyzing manual content...", [], []
             
             # Execute agent synchronously (Strands call)
             response = agent(query)
@@ -182,7 +191,7 @@ class BedrockKBAgent:
                 follow_up_questions = deduped_followups
 
             # Save the cleaned answer (without follow-ups) to session history
-            self.session_manager.add_message(session_id, "assistant", answer)
+            self.session_manager.add_message(session_id, "assistant", answer, user_email=user_email)
 
             # Get source URLs — only include ones the LLM actually cited in the answer
             retrieval_sources = get_last_retrieval_sources()

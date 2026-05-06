@@ -20,6 +20,8 @@ class DBChatSession(Base):
     __tablename__ = "app_chat_sessions"
     
     session_id = Column(String, primary_key=True)
+    user_email = Column(Text, index=True, nullable=True) # Nullable for backward compatibility
+    title = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_accessed = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     messages = Column(JSON, default=list)
