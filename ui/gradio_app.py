@@ -501,7 +501,7 @@ def build():
             history_dropdown = gr.Dropdown(
                 label="Recent Chats", 
                 choices=[], 
-                interactive=True, s
+                interactive=True,
                 elem_id="history-dropdown"
                 
             )
