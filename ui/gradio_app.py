@@ -7,26 +7,7 @@ import requests
 import json
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
-
-# Indian Standard Time (IST) offset is UTC+5:30
-IST = timezone(timedelta(hours=5, minutes=30))
-
-def format_timestamp(dt_str: str) -> str:
-    """Converts a UTC or ISO timestamp string to an IST formatted string."""
-    if not dt_str:
-        return ""
-    try:
-        # Handle 'Z' suffix for UTC if present
-        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-        # If naive, assume UTC
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        # Convert to IST
-        dt_ist = dt.astimezone(IST)
-        return dt_ist.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return ""
+from datetime import datetime
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
 ALLOWED_ROLES = ("agent", "underwriter", "external")
@@ -117,8 +98,12 @@ def login_user(email: str, password: str):
                 for s in sessions:
                     dt_str = s.get("last_accessed", "")
                     title = s.get("title", "New Chat")
-                    date_fmt = format_timestamp(dt_str)
-                    display_text = f"[{date_fmt}] {title}" if date_fmt else title
+                    try:
+                        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                        date_fmt = dt.strftime("%Y-%m-%d %H:%M")
+                        display_text = f"[{date_fmt}] {title}"
+                    except:
+                        display_text = title
                     dropdown_choices.append((display_text, s["session_id"]))
         except Exception as e:
             print(f"Failed to fetch sessions: {e}")
@@ -174,8 +159,12 @@ def refresh_dropdown(user_state):
                 for s in sessions:
                     dt_str = s.get("last_accessed", "")
                     title = s.get("title", "New Chat")
-                    date_fmt = format_timestamp(dt_str)
-                    display_text = f"[{date_fmt}] {title}" if date_fmt else title
+                    try:
+                        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                        date_fmt = dt.strftime("%Y-%m-%d %H:%M")
+                        display_text = f"[{date_fmt}] {title}"
+                    except:
+                        display_text = title
                     choices.append((display_text, s["session_id"]))
         except Exception as e:
             pass
@@ -379,51 +368,22 @@ footer { display: none !important; }
 #history-dropdown .wrap .options {
     width: 100% !important;
 }
-
-/* Block browser autofill UI on history dropdown */
-#history-dropdown input:-webkit-autofill,
-#history-dropdown input:-webkit-autofill:hover,
-#history-dropdown input:-webkit-autofill:focus {
-    -webkit-box-shadow: 0 0 0px 1000px white inset !important;
-    transition: background-color 5000s ease-in-out 0s !important;
-}
-#history-dropdown input::-webkit-contacts-auto-fill-button,
-#history-dropdown input::-webkit-credentials-auto-fill-button {
-    visibility: hidden !important;
-    pointer-events: none !important;
-    position: absolute !important;
-    right: 0 !important;
-}
 """
 
 HEAD_JS = """
 <script>
-// Decoy fields to absorb browser autofill away from the dropdown
 document.addEventListener('DOMContentLoaded', function() {
-    // Insert hidden decoy fields at top of body to satisfy autofill
-    const decoy = document.createElement('div');
-    decoy.style.cssText = 'position:absolute;opacity:0;pointer-events:none;height:0;overflow:hidden;';
-    decoy.innerHTML = '<input type="text" name="username_decoy" autocomplete="username" tabindex="-1">'
-                    + '<input type="password" name="password_decoy" autocomplete="current-password" tabindex="-1">';
-    document.body.prepend(decoy);
-
-    // Aggressively suppress autofill on the history dropdown
-    const killAutofill = () => {
-        document.querySelectorAll('#history-dropdown input, #history-dropdown [role="combobox"]')
-            .forEach(el => {
-                el.setAttribute('autocomplete', 'off');
-                el.setAttribute('autocomplete', 'new-password'); // tricks Chrome
-                el.setAttribute('readonly', 'true');
-                el.setAttribute('data-lpignore', 'true');
-                el.setAttribute('data-form-type', 'other');
-                // Remove readonly after a tick so user can still type/click
-                setTimeout(() => el.removeAttribute('readonly'), 100);
-            });
-    };
-
-    const observer = new MutationObserver(killAutofill);
+    const observer = new MutationObserver((mutations) => {
+        const inputs = document.querySelectorAll('#history-dropdown input');
+        inputs.forEach(input => {
+            if (input.getAttribute('autocomplete') !== 'off') {
+                input.setAttribute('autocomplete', 'off');
+                input.setAttribute('name', 'no-autocomplete-' + Math.random());
+                input.setAttribute('data-lpignore', 'true'); // LastPass ignore
+            }
+        });
+    });
     observer.observe(document.body, { childList: true, subtree: true });
-    killAutofill();
 });
 </script>
 """
@@ -431,10 +391,6 @@ document.addEventListener('DOMContentLoaded', function() {
 # ─── Suggestions ─────────────────────────────────────────────────────────────
 
 SUGGESTIONS = [
-    "What is class code 10040?",
-    "Binding authority property manual overview",
-    "What are the GL submission requirements?",
-    "What operations are prohibited?",
 ]
 
 # ─── Core chat logic ─────────────────────────────────────────────────────────
@@ -545,8 +501,9 @@ def build():
             history_dropdown = gr.Dropdown(
                 label="Recent Chats", 
                 choices=[], 
-                interactive=True, 
+                interactive=True, s
                 elem_id="history-dropdown"
+                
             )
             
             with gr.Accordion("⚙ Settings", open=False):
@@ -668,8 +625,12 @@ def build():
                         for s in sessions:
                             dt_str = s.get("last_accessed", "")
                             title = s.get("title", "New Chat")
-                            date_fmt = format_timestamp(dt_str)
-                            display_text = f"[{date_fmt}] {title}" if date_fmt else title
+                            try:
+                                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                                date_fmt = dt.strftime("%Y-%m-%d %H:%M")
+                                display_text = f"[{date_fmt}] {title}"
+                            except:
+                                display_text = title
                             choices.append((display_text, s["session_id"]))
                 except Exception as e:
                     pass
