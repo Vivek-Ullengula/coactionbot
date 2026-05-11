@@ -1,7 +1,13 @@
 from sqlalchemy import Column, BigInteger, String, DateTime, JSON, Text
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# Indian Standard Time (IST) offset is UTC+5:30
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_ist_now():
+    return datetime.now(IST)
 
 Base = declarative_base()
 
@@ -13,8 +19,8 @@ class DBUser(Base):
     email = Column(Text, unique=True, nullable=False)
     role = Column(Text, nullable=False)
     password_hash = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=get_ist_now, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=get_ist_now, server_default=func.now(), onupdate=get_ist_now)
 
 class DBChatSession(Base):
     __tablename__ = "app_chat_sessions"
@@ -22,7 +28,7 @@ class DBChatSession(Base):
     session_id = Column(String, primary_key=True)
     user_email = Column(Text, index=True, nullable=True) # Nullable for backward compatibility
     title = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    last_accessed = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=get_ist_now, server_default=func.now())
+    last_accessed = Column(DateTime(timezone=True), default=get_ist_now, server_default=func.now(), onupdate=get_ist_now)
     messages = Column(JSON, default=list)
     metadata_ = Column("metadata", JSON, default=dict)

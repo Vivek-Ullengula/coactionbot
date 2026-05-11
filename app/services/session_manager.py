@@ -1,8 +1,11 @@
 from typing import Optional
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from app.db.database import SessionLocal
 from app.db.models import DBChatSession
+
+# Indian Standard Time (IST) offset is UTC+5:30
+IST = timezone(timedelta(hours=5, minutes=30))
 
 class SessionManager:
     """
@@ -13,7 +16,7 @@ class SessionManager:
     
     def create_session(self, user_email: Optional[str] = None, metadata: Optional[dict] = None) -> str:
         session_id = str(uuid.uuid4())
-        now = datetime.utcnow()
+        now = datetime.now(IST)
         with SessionLocal() as db:
             session = DBChatSession(
                 session_id=session_id,
@@ -28,7 +31,7 @@ class SessionManager:
         return session_id
     
     def add_message(self, session_id: str, role: str, content: str, user_email: Optional[str] = None) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(IST)
         with SessionLocal() as db:
             session = db.query(DBChatSession).filter(DBChatSession.session_id == session_id).first()
             if not session:
@@ -66,7 +69,7 @@ class SessionManager:
         with SessionLocal() as db:
             session = db.query(DBChatSession).filter(DBChatSession.session_id == session_id).first()
             if session:
-                session.last_accessed = datetime.utcnow()
+                session.last_accessed = datetime.now(IST)
                 db.commit()
                 return session.messages
             return []

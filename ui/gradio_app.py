@@ -7,6 +7,7 @@ import requests
 import json
 import os
 import uuid
+from datetime import datetime
 
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
 ALLOWED_ROLES = ("agent", "underwriter", "external")
@@ -45,7 +46,8 @@ def login_user(email: str, password: str):
             "Please enter both email and password.",
             gr.update(visible=False),
             gr.update(visible=True),
-            ""
+            "",
+            gr.update(choices=[])
         )
     try:
         r = requests.post(
@@ -54,13 +56,17 @@ def login_user(email: str, password: str):
             timeout=10,
         )
         if r.status_code >= 400:
-            detail = r.json().get("detail", r.text)
+            if r.status_code == 401:
+                detail = "Invalid credentials"
+            else:
+                detail = r.json().get("detail", r.text)
             return (
                 {"authenticated": False, "name": "", "email": "", "role": "", "token": ""},
                 f"Login failed: {detail}",
                 gr.update(visible=False),
                 gr.update(visible=True),
-                ""
+                "",
+                gr.update(choices=[])
             )
         payload = r.json()
         user = payload.get("user", {})
@@ -89,7 +95,16 @@ def login_user(email: str, password: str):
             )
             if sessions_resp.ok:
                 sessions = sessions_resp.json()
-                dropdown_choices = [(s["title"], s["session_id"]) for s in sessions]
+                for s in sessions:
+                    dt_str = s.get("last_accessed", "")
+                    title = s.get("title", "New Chat")
+                    try:
+                        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                        date_fmt = dt.strftime("%Y-%m-%d %H:%M")
+                        display_text = f"[{date_fmt}] {title}"
+                    except:
+                        display_text = title
+                    dropdown_choices.append((display_text, s["session_id"]))
         except Exception as e:
             print(f"Failed to fetch sessions: {e}")
 
@@ -141,7 +156,16 @@ def refresh_dropdown(user_state):
             )
             if resp.ok:
                 sessions = resp.json()
-                choices = [(s["title"], s["session_id"]) for s in sessions]
+                for s in sessions:
+                    dt_str = s.get("last_accessed", "")
+                    title = s.get("title", "New Chat")
+                    try:
+                        dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                        date_fmt = dt.strftime("%Y-%m-%d %H:%M")
+                        display_text = f"[{date_fmt}] {title}"
+                    except:
+                        display_text = title
+                    choices.append((display_text, s["session_id"]))
         except Exception as e:
             pass
     return gr.update(choices=choices)
@@ -325,15 +349,48 @@ body, .gradio-container {
 
 /* Hide footer */
 footer { display: none !important; }
+
+/* Fix dropdown arrow collision and layout */
+#history-dropdown .wrap {
+    position: relative !important;
+}
+#history-dropdown .wrap .head .icon {
+    position: absolute !important;
+    right: 12px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    pointer-events: none !important;
+}
+#history-dropdown .wrap .head input {
+    padding-right: 40px !important;
+    text-overflow: ellipsis !important;
+}
+#history-dropdown .wrap .options {
+    width: 100% !important;
+}
+"""
+
+HEAD_JS = """
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const observer = new MutationObserver((mutations) => {
+        const inputs = document.querySelectorAll('#history-dropdown input');
+        inputs.forEach(input => {
+            if (input.getAttribute('autocomplete') !== 'off') {
+                input.setAttribute('autocomplete', 'off');
+                input.setAttribute('name', 'no-autocomplete-' + Math.random());
+                input.setAttribute('data-lpignore', 'true'); // LastPass ignore
+            }
+        });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+});
+</script>
 """
 
 # ─── Suggestions ─────────────────────────────────────────────────────────────
 
 SUGGESTIONS = [
-    "What is class code 10040?",
-    "Binding authority property manual overview",
-    "What are the GL submission requirements?",
-    "What operations are prohibited?",
 ]
 
 # ─── Core chat logic ─────────────────────────────────────────────────────────
@@ -433,7 +490,7 @@ def on_clear():
 # ─── Build App ───────────────────────────────────────────────────────────────
 
 def build():
-    with gr.Blocks(title="Coaction Binding Authority Assistant") as app:
+    with gr.Blocks(title="Coaction Binding Authority Assistant", head=HEAD_JS) as app:
 
         session_state = gr.State("")
         user_state = gr.State({"authenticated": False, "name": "", "email": "", "role": "", "token": ""})
@@ -441,7 +498,13 @@ def build():
         # ── Sidebar (History & Settings) ──
         with gr.Sidebar(label="Coaction Assistant", open=True):
             new_chat_btn = gr.Button("➕ New Chat", variant="primary")
-            history_dropdown = gr.Dropdown(label="Recent Chats", choices=[], interactive=True)
+            history_dropdown = gr.Dropdown(
+                label="Recent Chats", 
+                choices=[], 
+                interactive=True,
+                elem_id="history-dropdown"
+                
+            )
             
             with gr.Accordion("⚙ Settings", open=False):
                 top_k = gr.Slider(1, 20, value=5, step=1, label="Search depth")
@@ -559,7 +622,16 @@ def build():
                     )
                     if resp.ok:
                         sessions = resp.json()
-                        choices = [(s["title"], s["session_id"]) for s in sessions]
+                        for s in sessions:
+                            dt_str = s.get("last_accessed", "")
+                            title = s.get("title", "New Chat")
+                            try:
+                                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                                date_fmt = dt.strftime("%Y-%m-%d %H:%M")
+                                display_text = f"[{date_fmt}] {title}"
+                            except:
+                                display_text = title
+                            choices.append((display_text, s["session_id"]))
                 except Exception as e:
                     pass
             return [], "", gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(visible=True), "", gr.update(value=None, choices=choices)
