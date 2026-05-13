@@ -9,7 +9,7 @@ import os
 import uuid
 from datetime import datetime
 
-API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
+API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000/v1")
 ALLOWED_ROLES = ("agent", "underwriter", "external")
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -108,13 +108,15 @@ def login_user(email: str, password: str):
         except Exception as e:
             print(f"Failed to fetch sessions: {e}")
 
+        is_underwriter = role_key == 'underwriter'
         return (
             session_user, 
             welcome, 
             gr.update(visible=True), 
             gr.update(visible=False), 
             welcome,
-            gr.update(choices=dropdown_choices)
+            gr.update(choices=dropdown_choices),
+            gr.update(visible=is_underwriter)
         )
     except Exception as exc:
         return (
@@ -123,7 +125,8 @@ def login_user(email: str, password: str):
             gr.update(visible=False),
             gr.update(visible=True),
             "",
-            gr.update(choices=[])
+            gr.update(choices=[]),
+            gr.update(visible=False)
         )
 
 
@@ -141,7 +144,8 @@ def logout_user():
         gr.update(value="", visible=False),    # fu3
         gr.update(visible=True),     # suggestions
         "",                          # msg
-        gr.update(choices=[])        # history_dropdown
+        gr.update(choices=[]),       # history_dropdown
+        gr.update(visible=False)     # kb_accordion
     )
 
 
@@ -187,6 +191,37 @@ def load_session(session_id, user_state):
         return [], session_id, hide_btn, hide_btn, hide_btn, hide_btn
 
 
+
+def create_kb(name, desc, bucket, prefix, user_state):
+    if not user_state or not user_state.get("authenticated"):
+        return "⚠️ Please login first."
+    if not name or not bucket:
+        return "⚠️ Name and S3 Bucket are required."
+        
+    try:
+        r = requests.post(
+            f"{API_BASE}/knowledge-bases",
+            json={
+                "name": name,
+                "description": desc,
+                "s3_bucket": bucket,
+                "s3_prefix": prefix
+            },
+            headers={"Authorization": f"Bearer {user_state.get('token', '')}"},
+            timeout=60,
+        )
+        if not r.ok:
+            try:
+                err_msg = r.json().get("detail", r.text)
+            except:
+                err_msg = r.text
+            return f"❌ Failed to create KB: {err_msg}"
+            
+        data = r.json()
+        kb_id = data.get("kb_id", "")
+        return f"✅ Knowledge Base '{name}' created successfully! (ID: {kb_id}). Sync is in progress."
+    except Exception as exc:
+        return f"❌ Error: {exc}"
 
 def api_health() -> str:
     try:
@@ -421,49 +456,39 @@ def respond(message, history, session_id, top_k, user_state):
            gr.update(visible=False), "")
 
     try:
-        with requests.post(
-            f"{API_BASE}/query",
-            json={"query": message, "session_id": session_id or "", "top_k": top_k},
+        r = requests.post(
+            f"{API_BASE}/agents/coaction-underwriting/invoke",
+            json={"input_text": message, "session_id": session_id or "", "top_k": top_k},
             headers={"Authorization": f"Bearer {user_state.get('token', '')}"},
-            stream=True, timeout=120,
-        ) as resp:
-            resp.raise_for_status()
-            for raw_line in resp.iter_lines():
-                if not raw_line:
-                    continue
-                line = raw_line.decode("utf-8")
-                if not line.startswith("data: "):
-                    continue
-                data = json.loads(line[6:])
-
-                if data.get("type") == "status":
-                    history[-1]["content"] = data["message"]
-                    yield (history, session_id,
-                           gr.update(visible=False), gr.update(visible=False),
-                           gr.update(visible=False), gr.update(visible=False), "")
-
-                elif data.get("type") == "final":
-                    if "session_id" in data and not session_id:
-                        session_id = data["session_id"]
-                        
-                    answer = data.get("answer", "")
-                    history[-1]["content"] = answer
-                    fups = data.get("follow_up_questions", [])
-                    fu_updates = []
-                    for i in range(3):
-                        if i < len(fups):
-                            fu_updates.append(gr.update(value=fups[i], visible=True))
-                        else:
-                            fu_updates.append(gr.update(visible=False))
-                    
-                    yield (history, session_id, *fu_updates,
-                           gr.update(visible=False), "")
-
-                elif data.get("type") == "error":
-                    history[-1]["content"] = f"⚠️ {data['message']}"
-                    yield (history, session_id,
-                           gr.update(visible=False), gr.update(visible=False),
-                           gr.update(visible=False), gr.update(visible=False), "")
+            timeout=120,
+        )
+        if not r.ok:
+            try:
+                err_msg = r.json().get("detail", r.text)
+            except:
+                err_msg = r.text
+            raise Exception(f"API Error {r.status_code}: {err_msg}")
+            
+        data = r.json()
+        
+        if "session_id" in data and not session_id:
+            session_id = data["session_id"]
+            
+        answer = data.get("answer", "")
+        if data.get("status") == "error":
+            answer = f"⚠️ {answer}"
+            
+        history[-1]["content"] = answer
+        fups = data.get("metadata", {}).get("follow_up_questions", [])
+        fu_updates = []
+        for i in range(3):
+            if i < len(fups):
+                fu_updates.append(gr.update(value=fups[i], visible=True))
+            else:
+                fu_updates.append(gr.update(visible=False))
+        
+        yield (history, session_id, *fu_updates,
+               gr.update(visible=False), "")
 
     except Exception as exc:
         history[-1]["content"] = f"⚠️ {exc}"
@@ -510,6 +535,15 @@ def build():
                 top_k = gr.Slider(1, 20, value=5, step=1, label="Search depth")
                 gr.HTML(f'<p style="font-size:0.72rem;color:#64748b;margin-top:8px;">'
                         f'API: {api_health()}</p>')
+
+            with gr.Accordion("📚 Knowledge Base Management", open=False, visible=False) as kb_accordion:
+                gr.Markdown("Create a new Knowledge Base (Underwriter only)")
+                kb_name = gr.Textbox(label="KB Name", placeholder="e.g. my-new-kb")
+                kb_desc = gr.Textbox(label="Description", placeholder="Description of this KB")
+                kb_bucket = gr.Textbox(label="S3 Bucket", value="vega-binding-authority")
+                kb_prefix = gr.Textbox(label="S3 Prefix", placeholder="e.g. docs/")
+                kb_create_btn = gr.Button("Create KB", variant="secondary")
+                kb_status = gr.Markdown("")
 
         with gr.Column(visible=True) as auth_col:
             gr.Markdown("### Login Required")
@@ -600,16 +634,22 @@ def build():
 
         su_btn.click(signup_user, [su_name, su_email, su_password, su_role], [su_status])
         
+        kb_create_btn.click(
+            create_kb,
+            [kb_name, kb_desc, kb_bucket, kb_prefix, user_state],
+            [kb_status]
+        )
+        
         li_btn.click(
             login_user,
             [li_email, li_password],
-            [user_state, li_status, chat_col, auth_col, user_badge, history_dropdown],
+            [user_state, li_status, chat_col, auth_col, user_badge, history_dropdown, kb_accordion],
         )
         
         logout.click(
             logout_user,
             None,
-            [user_state, li_status, chat_col, auth_col, user_badge, chatbot, session_state, fu1, fu2, fu3, sug_row, msg, history_dropdown],
+            [user_state, li_status, chat_col, auth_col, user_badge, chatbot, session_state, fu1, fu2, fu3, sug_row, msg, history_dropdown, kb_accordion],
         )
 
         def clear_chat(user_state):
